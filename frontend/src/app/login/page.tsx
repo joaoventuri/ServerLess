@@ -7,7 +7,6 @@ import { Input } from "@/components/ui/input";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { useAuthStore } from "@/stores/auth";
 import { api } from "@/lib/api";
-import { Eye } from "lucide-react";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -61,15 +60,14 @@ export default function LoginPage() {
 
       <Card className="w-full max-w-md border-border/50 bg-card/80 backdrop-blur-sm relative z-10">
         <CardHeader className="text-center pb-2">
-          <div className="flex items-center justify-center gap-2 mb-4">
-            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10 border border-primary/30 neon-glow">
-              <Eye className="h-5 w-5 text-primary" />
-            </div>
+          <div className="flex items-center justify-center mb-4">
+            <span className="text-3xl font-bold tracking-tight" style={{
+              color: "#4ade80",
+              textShadow: "0 0 7px #22c55e, 0 0 20px #22c55e80, 0 0 40px #22c55e40",
+            }}>
+              Server<span style={{ color: "#86efac" }}>Less</span>
+            </span>
           </div>
-          <CardTitle className="text-2xl tracking-tight">
-            <span className="text-foreground">OPS</span>
-            <span className="text-primary neon-text">BIGBRO</span>
-          </CardTitle>
           <p className="text-xs text-muted-foreground mt-1 tracking-widest uppercase">
             Infrastructure Command Center
           </p>

@@ -14,7 +14,6 @@ import {
   Bell,
   Settings,
   LogOut,
-  Eye,
   Globe,
   Archive,
   Layers,
@@ -42,14 +41,14 @@ export function Sidebar() {
   return (
     <aside className="fixed left-0 top-0 z-40 h-screen w-64 border-r border-border bg-[#0c0c0c] flex flex-col">
       {/* Logo */}
-      <div className="flex h-16 items-center gap-3 border-b border-border px-6">
-        <div className="flex h-8 w-8 items-center justify-center rounded-md bg-primary/10 border border-primary/30">
-          <Eye className="h-4 w-4 text-primary" />
-        </div>
-        <div>
-          <span className="text-sm font-bold tracking-wider text-foreground">OPS</span>
-          <span className="text-sm font-bold tracking-wider text-primary neon-text">BIGBRO</span>
-        </div>
+      <div className="flex h-16 items-center justify-center border-b border-border px-4">
+        <span className="text-xl font-bold tracking-tight" style={{
+          color: "#4ade80",
+          textShadow: "0 0 7px #22c55e, 0 0 20px #22c55e80, 0 0 40px #22c55e40",
+          fontFamily: "'Inter', system-ui, sans-serif",
+        }}>
+          Server<span style={{ color: "#86efac" }}>Less</span>
+        </span>
       </div>
 
       {/* Navigation */}
