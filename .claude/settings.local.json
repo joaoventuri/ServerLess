@@ -23,7 +23,11 @@
       "Bash(curl -s http://localhost:3001/ide/proxy/dc8c9297-9c1f-408e-868e-43fbc683c4e9/)",
       "Bash(git init:*)",
       "Bash(gh auth:*)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git config:*)",
+      "Bash(gh repo:*)",
+      "Bash(git push:*)"
     ]
   }
 }
