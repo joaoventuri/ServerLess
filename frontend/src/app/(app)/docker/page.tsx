@@ -111,6 +111,9 @@ function ContainersTab({ servers }: { servers: ServerItem[] }) {
   const [editCompose, setEditCompose] = useState("");
   const [composeMode, setComposeMode] = useState(false);
   const [pullLatest, setPullLatest] = useState(false);
+  const [showRegAuth, setShowRegAuth] = useState(false);
+  const [regUser, setRegUser] = useState("");
+  const [regPass, setRegPass] = useState("");
 
   const load = () => api<ContainerItem[]>("/containers").then(setContainers).catch(() => {}).finally(() => setLoading(false));
   useEffect(() => { load(); const iv = setInterval(load, 10000); return () => clearInterval(iv); }, []);
@@ -172,6 +175,8 @@ function ContainersTab({ servers }: { servers: ServerItem[] }) {
         restartPolicy: editRestart,
         networks: inspectData?.networks || [],
         pullLatest,
+        registryUser: regUser || undefined,
+        registryPass: regPass || undefined,
       };
       if (composeMode && editCompose.trim()) body.compose = editCompose;
 
@@ -397,16 +402,30 @@ function ContainersTab({ servers }: { servers: ServerItem[] }) {
                           </>
                         )}
 
-                        {/* Pull latest toggle + Save button */}
+                        {/* Pull latest + Registry auth + Save button */}
                         <div className="pt-2 border-t border-border space-y-3">
                           <div className="flex items-center gap-2">
-                            <input type="checkbox" id="pullLatest" checked={pullLatest}
+                            <input type="checkbox" id={`pullLatest-${c.containerId}`} checked={pullLatest}
                               onChange={e => setPullLatest(e.target.checked)} className="accent-primary" />
-                            <label htmlFor="pullLatest" className="text-sm">Pull latest image before redeploy</label>
-                            <span className="text-[10px] text-muted-foreground ml-1">
-                              (fetches newest version from registry)
-                            </span>
+                            <label htmlFor={`pullLatest-${c.containerId}`} className="text-sm">Pull latest image before redeploy</label>
                           </div>
+
+                          {pullLatest && (
+                            <div>
+                              <button onClick={() => setShowRegAuth(!showRegAuth)}
+                                className="flex items-center gap-2 text-xs text-muted-foreground hover:text-foreground transition-colors">
+                                <ChevronRight className={`h-3 w-3 transition-transform ${showRegAuth ? "rotate-90" : ""}`} />
+                                Private Registry Authentication
+                              </button>
+                              {showRegAuth && (
+                                <div className="grid grid-cols-2 gap-2 mt-2">
+                                  <Input placeholder="Username" value={regUser} onChange={e => setRegUser(e.target.value)} className="text-xs" />
+                                  <Input type="password" placeholder="Password / Token" value={regPass} onChange={e => setRegPass(e.target.value)} className="text-xs" />
+                                </div>
+                              )}
+                            </div>
+                          )}
+
                           <div className="flex gap-2">
                             <Button className="flex-1" onClick={() => saveAndRedeploy(c)} disabled={saving}>
                               {saving ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Save className="h-4 w-4 mr-2" />}

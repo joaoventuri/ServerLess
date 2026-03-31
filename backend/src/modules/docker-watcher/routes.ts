@@ -400,7 +400,7 @@ router.get("/inspect/:serverId/:containerName", async (req: Request, res: Respon
 
 router.post("/update/:serverId/:containerName", async (req: Request, res: Response) => {
   const { serverId, containerName } = req.params;
-  const { image, ports, env, volumes, restartPolicy, networks, cmd, compose, pullLatest } = req.body;
+  const { image, ports, env, volumes, restartPolicy, networks, cmd, compose, pullLatest, registryUser, registryPass } = req.body;
 
   try {
     const server = await getServer(serverId, req.auth!.workspaceId);
@@ -408,13 +408,23 @@ router.post("/update/:serverId/:containerName", async (req: Request, res: Respon
     // Delete old container record from DB (new one will have different ID)
     await prisma.container.deleteMany({ where: { serverId, name: containerName } });
 
+    // Registry login for pull (same session)
+    let loginCmd = "";
+    if (pullLatest && registryUser && registryPass) {
+      const currentImg = image || compose?.match(/image:\s*(.+)/)?.[1]?.trim() || "";
+      let registry = "";
+      if (currentImg.startsWith("ghcr.io/")) registry = "ghcr.io";
+      else if (currentImg.includes(".") && currentImg.includes("/")) registry = currentImg.split("/")[0];
+      else registry = "https://index.docker.io/v1/";
+      loginCmd = `echo "${registryPass}" | docker login ${registry} -u "${registryUser}" --password-stdin 2>&1 && `;
+    }
+
     // If compose provided, write and deploy via compose
     if (compose && compose.trim()) {
       const composeDir = `/opt/obb-compose/${containerName}`;
       await sshExec(server, `mkdir -p "${composeDir}"`);
       await sshExec(server, `cat > "${composeDir}/docker-compose.yml" << 'CEOF'\n${compose}\nCEOF`);
-      // --remove-orphans but NEVER -v (preserve volumes/data)
-      await sshExec(server, `cd "${composeDir}" && docker compose down --remove-orphans 2>/dev/null; ${pullLatest ? "docker compose pull 2>&1;" : ""} docker compose up -d 2>&1`, 120000);
+      await sshExec(server, `cd "${composeDir}" && ${loginCmd}docker compose down --remove-orphans 2>/dev/null; ${pullLatest ? "docker compose pull 2>&1;" : ""} docker compose up -d 2>&1`, 120000);
       // Re-scan to pick up new containers
       await quickRescan(server);
       return res.json({ success: true, method: "compose", message: "Deployed via docker-compose" });
@@ -453,7 +463,7 @@ router.post("/update/:serverId/:containerName", async (req: Request, res: Respon
     // Stop old container and deploy via compose
     await sshExec(server, `docker stop ${containerName} 2>/dev/null; docker rm ${containerName} 2>/dev/null || true`);
     const output = await sshExec(server,
-      `cd "${composeDir}" && ${pullLatest ? `${composeCmd} pull 2>&1;` : ""} ${composeCmd} up -d 2>&1`, 120000);
+      `cd "${composeDir}" && ${loginCmd}${pullLatest ? `${composeCmd} pull 2>&1;` : ""} ${composeCmd} up -d 2>&1`, 120000);
 
     // Re-scan to pick up new container in DB
     await quickRescan(server);
