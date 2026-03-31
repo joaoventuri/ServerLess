@@ -408,7 +408,8 @@ router.post("/update/:serverId/:containerName", async (req: Request, res: Respon
       const composeDir = `/opt/obb-compose/${containerName}`;
       await sshExec(server, `mkdir -p "${composeDir}"`);
       await sshExec(server, `cat > "${composeDir}/docker-compose.yml" << 'CEOF'\n${compose}\nCEOF`);
-      await sshExec(server, `cd "${composeDir}" && docker compose down 2>/dev/null; docker compose up -d 2>&1`, 120000);
+      // --remove-orphans but NEVER -v (preserve volumes/data)
+      await sshExec(server, `cd "${composeDir}" && docker compose down --remove-orphans 2>/dev/null; docker compose up -d 2>&1`, 120000);
       // Re-scan to pick up new containers
       await quickRescan(server);
       return res.json({ success: true, method: "compose", message: "Deployed via docker-compose" });
