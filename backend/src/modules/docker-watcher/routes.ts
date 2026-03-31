@@ -342,7 +342,7 @@ router.get("/inspect/:serverId/:containerName", async (req: Request, res: Respon
     const networks = Object.keys(ns.Networks || {});
 
     const labels = config.Labels || {};
-    const containerName = data.Name?.replace(/^\//, "") || containerName;
+    const resolvedName = data.Name?.replace(/^\//, "") || containerName;
     const restartPolicy = hc.RestartPolicy?.Name || "no";
 
     // Try to find original docker-compose file
@@ -356,7 +356,7 @@ router.get("/inspect/:serverId/:containerName", async (req: Request, res: Respon
 
     // Always generate a compose from inspect data
     const generatedCompose = generateComposeFromInspect({
-      name: containerName,
+      name: resolvedName,
       image: config.Image,
       ports,
       env: env.filter(e => !e.builtin),
@@ -369,7 +369,7 @@ router.get("/inspect/:serverId/:containerName", async (req: Request, res: Respon
     });
 
     res.json({
-      name: containerName,
+      name: resolvedName,
       image: config.Image,
       status: data.State?.Status || "unknown",
       ports,
@@ -805,47 +805,77 @@ router.get("/registry/inspect", async (req: Request, res: Response) => {
 
   // Parse image:tag
   let tag = "latest";
-  if (image.includes(":")) {
-    const parts = image.split(":");
-    tag = parts.pop()!;
-    image = parts.join(":");
+  const colonIdx = image.lastIndexOf(":");
+  // Avoid splitting on registry port like ghcr.io:443/org/repo
+  if (colonIdx > 0 && !image.substring(colonIdx + 1).includes("/")) {
+    tag = image.substring(colonIdx + 1);
+    image = image.substring(0, colonIdx);
   }
-  const repo = image.includes("/") ? image : `library/${image}`;
 
   try {
-    // Get auth token
-    const tokenResp = await fetch(
-      `https://auth.docker.io/token?service=registry.docker.io&scope=repository:${repo}:pull`
-    );
-    const { token } = await tokenResp.json();
+    // Detect registry
+    let registryBase: string;
+    let repo: string;
+    let tokenUrl: string;
+    let authHeader: string;
 
-    // Get manifest (fat manifest or v2)
-    const manifestResp = await fetch(
-      `https://registry-1.docker.io/v2/${repo}/manifests/${tag}`,
-      {
-        headers: {
-          Authorization: `Bearer ${token}`,
-          Accept: "application/vnd.docker.distribution.manifest.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.list.v2+json",
-        },
-      }
-    );
+    if (image.startsWith("ghcr.io/")) {
+      // GitHub Container Registry
+      repo = image.replace("ghcr.io/", "");
+      registryBase = "https://ghcr.io";
+      // GHCR uses anonymous token for public packages
+      const tokenResp = await fetch(
+        `https://ghcr.io/token?scope=repository:${repo}:pull&service=ghcr.io`,
+        { headers: { "User-Agent": "OpsBigBro" } }
+      );
+      const tokenData = await tokenResp.json();
+      authHeader = `Bearer ${tokenData.token}`;
+    } else if (image.includes("/") && image.includes(".")) {
+      // Generic registry (e.g. registry.example.com/org/repo)
+      const parts = image.split("/");
+      const registryHost = parts.shift()!;
+      repo = parts.join("/");
+      registryBase = `https://${registryHost}`;
+      // Try anonymous
+      authHeader = "";
+    } else {
+      // Docker Hub
+      repo = image.includes("/") ? image : `library/${image}`;
+      registryBase = "https://registry-1.docker.io";
+      const tokenResp = await fetch(
+        `https://auth.docker.io/token?service=registry.docker.io&scope=repository:${repo}:pull`
+      );
+      const tokenData = await tokenResp.json();
+      authHeader = `Bearer ${tokenData.token}`;
+    }
+
+    const headers: Record<string, string> = {
+      Accept: [
+        "application/vnd.docker.distribution.manifest.v2+json",
+        "application/vnd.oci.image.manifest.v1+json",
+        "application/vnd.docker.distribution.manifest.list.v2+json",
+        "application/vnd.oci.image.index.v1+json",
+      ].join(", "),
+      "User-Agent": "OpsBigBro",
+    };
+    if (authHeader) headers["Authorization"] = authHeader;
+
+    // Get manifest
+    const manifestResp = await fetch(`${registryBase}/v2/${repo}/manifests/${tag}`, { headers });
+    if (!manifestResp.ok) {
+      return res.json({ ports: [], env: [], volumes: [], error: `Registry returned ${manifestResp.status}` });
+    }
     let manifestData = await manifestResp.json();
 
-    // If it's a manifest list (multi-arch), pick amd64/linux
+    // If manifest list (multi-arch), pick amd64/linux
     if (manifestData.manifests) {
       const amd64 = manifestData.manifests.find(
-        (m: any) => m.platform?.architecture === "amd64" && m.platform?.os === "linux"
+        (m: any) => (m.platform?.architecture === "amd64" && m.platform?.os === "linux")
       ) || manifestData.manifests[0];
       if (amd64) {
-        const innerResp = await fetch(
-          `https://registry-1.docker.io/v2/${repo}/manifests/${amd64.digest}`,
-          {
-            headers: {
-              Authorization: `Bearer ${token}`,
-              Accept: "application/vnd.docker.distribution.manifest.v2+json, application/vnd.oci.image.manifest.v1+json",
-            },
-          }
-        );
+        const innerResp = await fetch(`${registryBase}/v2/${repo}/manifests/${amd64.digest}`, {
+          headers: { ...headers, Accept: "application/vnd.docker.distribution.manifest.v2+json, application/vnd.oci.image.manifest.v1+json" },
+        });
         manifestData = await innerResp.json();
       }
     }
@@ -854,14 +884,11 @@ router.get("/registry/inspect", async (req: Request, res: Response) => {
     const configDigest = manifestData.config?.digest;
     if (!configDigest) return res.json({ ports: [], env: [], volumes: [] });
 
-    const configResp = await fetch(
-      `https://registry-1.docker.io/v2/${repo}/blobs/${configDigest}`,
-      { headers: { Authorization: `Bearer ${token}` } }
-    );
+    const configResp = await fetch(`${registryBase}/v2/${repo}/blobs/${configDigest}`, { headers });
     const configData = await configResp.json();
     const cfg = configData.config || configData.container_config || {};
 
-    // Extract exposed ports: {"80/tcp": {}, "443/tcp": {}}
+    // Extract exposed ports
     const ports: { container: string; protocol: string }[] = [];
     if (cfg.ExposedPorts) {
       for (const key of Object.keys(cfg.ExposedPorts)) {
@@ -870,9 +897,9 @@ router.get("/registry/inspect", async (req: Request, res: Response) => {
       }
     }
 
-    // Extract env vars: ["PATH=/usr/bin", "NGINX_VERSION=1.25"]
+    // Extract env vars
     const env: { key: string; value: string; builtin: boolean }[] = [];
-    const builtinKeys = new Set(["PATH", "HOME", "HOSTNAME"]);
+    const builtinKeys = new Set(["PATH", "HOME", "HOSTNAME", "LANG", "LC_ALL", "LANGUAGE"]);
     if (cfg.Env && Array.isArray(cfg.Env)) {
       for (const e of cfg.Env) {
         const eqIdx = e.indexOf("=");
@@ -882,7 +909,7 @@ router.get("/registry/inspect", async (req: Request, res: Response) => {
       }
     }
 
-    // Extract volumes: {"/var/lib/mysql": {}}
+    // Extract volumes
     const volumes: string[] = [];
     if (cfg.Volumes) {
       for (const key of Object.keys(cfg.Volumes)) {
@@ -890,11 +917,12 @@ router.get("/registry/inspect", async (req: Request, res: Response) => {
       }
     }
 
-    // Cmd and Entrypoint
-    const cmd = cfg.Cmd || [];
-    const entrypoint = cfg.Entrypoint || [];
-
-    res.json({ ports, env, volumes, cmd, entrypoint, workingDir: cfg.WorkingDir || "" });
+    res.json({
+      ports, env, volumes,
+      cmd: cfg.Cmd || [],
+      entrypoint: cfg.Entrypoint || [],
+      workingDir: cfg.WorkingDir || "",
+    });
   } catch (err: any) {
     res.status(500).json({ error: err.message, ports: [], env: [], volumes: [] });
   }
