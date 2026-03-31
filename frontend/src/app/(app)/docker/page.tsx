@@ -447,7 +447,11 @@ function DeployTab({ servers, onDeployed, initialImage }: { servers: ServerItem[
     if (!image || image === inspected || image.length < 2) return;
     setInspecting(true);
     try {
-      const data = await api<any>(`/containers/registry/inspect?image=${encodeURIComponent(image)}`);
+      // Pass registry credentials if set (for private GHCR, etc)
+      const params = new URLSearchParams({ image });
+      if (form.registryUser) params.set("user", form.registryUser);
+      if (form.registryPass) params.set("pass", form.registryPass);
+      const data = await api<any>(`/containers/registry/inspect?${params}`);
       setInspected(image);
 
       // Auto-fill ports

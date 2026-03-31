@@ -823,12 +823,13 @@ router.get("/registry/tags", async (req: Request, res: Response) => {
 
 router.get("/registry/inspect", async (req: Request, res: Response) => {
   let image = req.query.image as string;
+  const regUser = req.query.user as string || "";
+  const regPass = req.query.pass as string || "";
   if (!image) return res.status(400).json({ error: "image parameter required" });
 
   // Parse image:tag
   let tag = "latest";
   const colonIdx = image.lastIndexOf(":");
-  // Avoid splitting on registry port like ghcr.io:443/org/repo
   if (colonIdx > 0 && !image.substring(colonIdx + 1).includes("/")) {
     tag = image.substring(colonIdx + 1);
     image = image.substring(0, colonIdx);
@@ -838,17 +839,21 @@ router.get("/registry/inspect", async (req: Request, res: Response) => {
     // Detect registry
     let registryBase: string;
     let repo: string;
-    let tokenUrl: string;
     let authHeader: string;
 
     if (image.startsWith("ghcr.io/")) {
       // GitHub Container Registry
       repo = image.replace("ghcr.io/", "");
       registryBase = "https://ghcr.io";
-      // GHCR uses anonymous token for public packages
+
+      // Use credentials if provided (private packages), otherwise anonymous
+      const tokenHeaders: Record<string, string> = { "User-Agent": "ServerLess" };
+      if (regUser && regPass) {
+        tokenHeaders["Authorization"] = "Basic " + Buffer.from(`${regUser}:${regPass}`).toString("base64");
+      }
       const tokenResp = await fetch(
         `https://ghcr.io/token?scope=repository:${repo}:pull&service=ghcr.io`,
-        { headers: { "User-Agent": "OpsBigBro" } }
+        { headers: tokenHeaders }
       );
       const tokenData = await tokenResp.json();
       authHeader = `Bearer ${tokenData.token}`;
@@ -858,8 +863,10 @@ router.get("/registry/inspect", async (req: Request, res: Response) => {
       const registryHost = parts.shift()!;
       repo = parts.join("/");
       registryBase = `https://${registryHost}`;
-      // Try anonymous
-      authHeader = "";
+      // Use Basic auth if credentials provided
+      authHeader = regUser && regPass
+        ? "Basic " + Buffer.from(`${regUser}:${regPass}`).toString("base64")
+        : "";
     } else {
       // Docker Hub
       repo = image.includes("/") ? image : `library/${image}`;
