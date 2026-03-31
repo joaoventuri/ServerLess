@@ -286,9 +286,27 @@ router.get("/:id/logs", async (req: Request, res: Response) => {
   const stackDir = `/opt/obb-stacks/${stack.name.replace(/[^a-zA-Z0-9_-]/g, "_")}`;
 
   try {
-    const logs = await sshExec(server,
-      `cd "${stackDir}" && docker compose logs --tail ${tail} --no-color 2>&1`, 15000);
-    res.json({ logs });
+    // Get container names from this stack
+    const ps = await sshExec(server,
+      `cd "${stackDir}" && docker compose ps --format "{{.Name}}" 2>/dev/null`).catch(() => "");
+    const names = ps.split("\n").filter(Boolean);
+
+    if (names.length === 0 && stack.containerNames.length > 0) {
+      // Fallback to stored names
+      names.push(...stack.containerNames);
+    }
+
+    // Get logs from each container individually (works on all Docker versions)
+    let allLogs = "";
+    for (const name of names) {
+      const containerLogs = await sshExec(server,
+        `docker logs --tail ${Math.floor(tail / Math.max(names.length, 1))} ${name} 2>&1`).catch(() => "");
+      if (containerLogs) {
+        allLogs += `\n━━━ ${name} ━━━\n${containerLogs}\n`;
+      }
+    }
+
+    res.json({ logs: allLogs.trim() || "No logs available" });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
