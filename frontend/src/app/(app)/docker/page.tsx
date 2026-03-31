@@ -514,85 +514,107 @@ function DeployTab({ servers, onDeployed, initialImage }: { servers: ServerItem[
     if (!composeText.trim()) return;
     const lines = composeText.split("\n");
 
-    // Find first service
-    let inService = false;
-    let serviceIndent = 0;
     let svcName = "";
     let svcImage = "";
+    let svcRestart = "unless-stopped";
     const svcPorts: any[] = [];
     const svcEnvs: any[] = [];
     const svcVolumes: any[] = [];
-    let svcRestart = "unless-stopped";
-    let currentSection = "";
 
-    for (const line of lines) {
-      const trimmed = line.trimEnd();
-      if (!trimmed || trimmed.startsWith("#")) continue;
-      const indent = line.length - line.trimStart().length;
+    // Phase 1: find "services:" and the first service name + its indent
+    let servicesLineIdx = -1;
+    let serviceNameIdx = -1;
+    let serviceIndent = 0;
 
-      // Detect services block
-      if (trimmed === "services:") { inService = true; continue; }
-
-      if (inService && !svcName) {
-        // First service name
-        const m = trimmed.match(/^[\w][\w.-]*:/);
-        if (m && indent > 0 && indent <= 4) {
-          svcName = trimmed.replace(":", "").trim();
+    for (let i = 0; i < lines.length; i++) {
+      const stripped = lines[i].replace(/#.*$/, "").trimEnd(); // remove comments
+      if (!stripped.trim()) continue;
+      if (stripped.trim() === "services:") { servicesLineIdx = i; continue; }
+      if (servicesLineIdx >= 0 && serviceNameIdx < 0) {
+        const indent = stripped.length - stripped.trimStart().length;
+        const m = stripped.trim().match(/^([\w][\w.-]*):\s*$/);
+        if (m && indent > 0) {
+          svcName = m[1];
+          serviceNameIdx = i;
           serviceIndent = indent;
-          continue;
+          break;
         }
       }
+    }
 
-      if (svcName && indent > serviceIndent) {
-        // Inside first service
+    if (serviceNameIdx < 0) {
+      setToast({ type: "error", message: "Could not find a service in the compose file" });
+      return;
+    }
+
+    // Phase 2: parse the service block
+    let currentSection = "";
+    const propIndent = serviceIndent * 2; // expected indent for properties like image, ports
+
+    for (let i = serviceNameIdx + 1; i < lines.length; i++) {
+      const raw = lines[i];
+      const stripped = raw.replace(/#.*$/, "").trimEnd();
+      if (!stripped.trim()) continue;
+
+      const indent = raw.length - raw.trimStart().length;
+
+      // Stop if we hit another service at same level or a top-level key
+      if (indent <= serviceIndent && stripped.trim().match(/^[\w]/)) break;
+
+      const trimmed = stripped.trim();
+
+      // Detect property keys at service level
+      if (indent <= propIndent + 2 && trimmed.match(/^[\w][\w_-]*:/)) {
         const key = trimmed.split(":")[0].trim();
+        const val = trimmed.split(":").slice(1).join(":").trim();
 
-        if (key === "image") svcImage = trimmed.split(":").slice(1).join(":").trim();
-        else if (key === "container_name") svcName = trimmed.split(":").slice(1).join(":").trim();
-        else if (key === "restart") svcRestart = trimmed.split(":").slice(1).join(":").trim();
-        else if (key === "ports") { currentSection = "ports"; continue; }
-        else if (key === "environment") { currentSection = "env"; continue; }
-        else if (key === "volumes") { currentSection = "volumes"; continue; }
-        else if (key === "depends_on" || key === "healthcheck" || key === "command" || key === "entrypoint" || key === "networks" || key === "labels" || key === "deploy") {
+        if (key === "image") { svcImage = val; currentSection = ""; continue; }
+        if (key === "container_name") { svcName = val; currentSection = ""; continue; }
+        if (key === "restart") { svcRestart = val; currentSection = ""; continue; }
+        if (key === "ports") { currentSection = "ports"; continue; }
+        if (key === "environment") { currentSection = "env"; continue; }
+        if (key === "volumes" && indent < propIndent + 4) { currentSection = "volumes"; continue; }
+        if (["depends_on", "healthcheck", "command", "entrypoint", "networks", "labels", "deploy", "build", "logging"].includes(key)) {
           currentSection = ""; continue;
         }
 
-        if (currentSection === "ports" && trimmed.trim().startsWith("-")) {
-          const raw = trimmed.replace(/^[\s-"']+/, "").replace(/["']+$/, "");
-          const parts = raw.split(":");
+        // If inside env section — map format KEY: value
+        if (currentSection === "env" && !["test", "interval", "timeout", "retries", "start_period", "condition"].includes(key)) {
+          let v = val;
+          const defMatch = v.match(/\$\{([^:}]+)(?::[-=]([^}]*))?\}/);
+          if (defMatch) v = defMatch[2] || "";
+          svcEnvs.push({ key, value: v });
+          continue;
+        }
+        continue;
+      }
+
+      // List items (- something)
+      if (trimmed.startsWith("-")) {
+        const item = trimmed.replace(/^-\s*/, "").replace(/^["']|["']$/g, "");
+
+        if (currentSection === "ports") {
+          const parts = item.split(":");
           if (parts.length >= 2) {
-            svcPorts.push({ host: parts[0], container: parts[1].split("/")[0], protocol: parts[1].includes("/") ? parts[1].split("/")[1] : "tcp" });
+            const containerRaw = parts[1];
+            svcPorts.push({
+              host: parts[0],
+              container: containerRaw.split("/")[0],
+              protocol: containerRaw.includes("/") ? containerRaw.split("/")[1] : "tcp",
+            });
           }
         }
         if (currentSection === "env") {
-          if (trimmed.trim().startsWith("-")) {
-            // List format: - KEY=value
-            const raw = trimmed.replace(/^[\s-]+/, "");
-            const eq = raw.indexOf("=");
-            if (eq > 0) svcEnvs.push({ key: raw.slice(0, eq), value: raw.slice(eq + 1) });
-          } else if (trimmed.includes(":") && !["environment", "ports", "volumes"].includes(key)) {
-            // Map format: KEY: value
-            const k = trimmed.split(":")[0].trim();
-            let v = trimmed.split(":").slice(1).join(":").trim();
-            // Strip ${VAR:-default} to just the default
-            const defMatch = v.match(/\$\{[^:}]+:-([^}]*)\}/);
-            if (defMatch) v = defMatch[1];
-            else if (v.startsWith("${")) v = ""; // No default, leave empty for user
-            svcEnvs.push({ key: k, value: v });
-          }
+          const eq = item.indexOf("=");
+          if (eq > 0) svcEnvs.push({ key: item.slice(0, eq), value: item.slice(eq + 1) });
         }
-        if (currentSection === "volumes" && trimmed.trim().startsWith("-")) {
-          const raw = trimmed.replace(/^[\s-"']+/, "").replace(/["']+$/, "");
-          const parts = raw.split(":");
+        if (currentSection === "volumes") {
+          const parts = item.split(":");
           if (parts.length >= 2) {
             svcVolumes.push({ host: parts[0], container: parts[1] });
           }
         }
       }
-
-      // Detect second service or top-level key → stop
-      if (svcName && indent === serviceIndent && trimmed.match(/^[\w][\w.-]*:/)) break;
-      if (svcName && indent === 0 && trimmed.match(/^[a-z]/)) break;
     }
 
     // Apply to form
@@ -600,9 +622,16 @@ function DeployTab({ servers, onDeployed, initialImage }: { servers: ServerItem[
     if (svcPorts.length > 0) setPorts(svcPorts);
     if (svcEnvs.length > 0) setEnvVars(svcEnvs);
     if (svcVolumes.length > 0) setVolumes(svcVolumes);
+
+    // After populating, also try to inspect the image for additional metadata
+    if (svcImage) {
+      setInspected(""); // reset so inspect runs
+      inspectImage(svcImage);
+    }
+
     setComposeOpen(false);
     setComposeText("");
-    setToast({ type: "success", message: `Imported: ${svcImage || svcName} — ${svcPorts.length} ports, ${svcEnvs.length} env vars, ${svcVolumes.length} volumes` });
+    setToast({ type: "success", message: `Imported: ${svcImage} — ${svcPorts.length} ports, ${svcEnvs.length} env vars, ${svcVolumes.length} volumes` });
     setTimeout(() => setToast(null), 5000);
   };
 
