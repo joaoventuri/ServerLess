@@ -202,6 +202,163 @@ router.post("/action", async (req: Request, res: Response) => {
   }
 });
 
+// ─── CONTAINER INSPECT (full config) ────────────────────────
+
+router.get("/inspect/:serverId/:containerName", async (req: Request, res: Response) => {
+  const { serverId, containerName } = req.params;
+
+  try {
+    const server = await getServer(serverId, req.auth!.workspaceId);
+
+    // Full docker inspect
+    const raw = await sshExec(server, `docker inspect ${containerName} 2>&1`);
+    let data: any;
+    try { data = JSON.parse(raw)[0]; } catch { return res.status(404).json({ error: "Container not found" }); }
+
+    const config = data.Config || {};
+    const hc = data.HostConfig || {};
+    const ns = data.NetworkSettings || {};
+
+    // Build port list
+    const ports: { host: string; container: string; protocol: string }[] = [];
+    for (const [cp, binds] of Object.entries(hc.PortBindings || {})) {
+      const [port, proto] = cp.split("/");
+      for (const b of (binds as any[]) || []) {
+        ports.push({ host: b.HostPort, container: port, protocol: proto || "tcp" });
+      }
+    }
+
+    // Build env list (filter builtins)
+    const builtins = new Set(["PATH", "HOME", "HOSTNAME"]);
+    const env: { key: string; value: string; builtin: boolean }[] = [];
+    for (const e of config.Env || []) {
+      const eq = e.indexOf("=");
+      const key = eq > 0 ? e.slice(0, eq) : e;
+      const value = eq > 0 ? e.slice(eq + 1) : "";
+      env.push({ key, value, builtin: builtins.has(key) });
+    }
+
+    // Volumes
+    const volumes: { name: string; destination: string; type: string }[] = [];
+    for (const m of data.Mounts || []) {
+      volumes.push({ name: m.Name || m.Source, destination: m.Destination, type: m.Type });
+    }
+
+    // Networks
+    const networks = Object.keys(ns.Networks || {});
+
+    // Try to find docker-compose file
+    let compose = "";
+    const labels = config.Labels || {};
+    const composeProject = labels["com.docker.compose.project.working_dir"];
+    const composeFile = labels["com.docker.compose.project.config_files"];
+    if (composeProject || composeFile) {
+      const path = composeFile || `${composeProject}/docker-compose.yml`;
+      compose = await sshExec(server, `cat "${path}" 2>/dev/null || cat "${composeProject}/docker-compose.yaml" 2>/dev/null || cat "${composeProject}/compose.yml" 2>/dev/null || echo ""`).catch(() => "");
+    }
+
+    res.json({
+      name: data.Name?.replace(/^\//, ""),
+      image: config.Image,
+      status: data.State?.Status || "unknown",
+      ports,
+      env,
+      volumes,
+      networks,
+      restartPolicy: hc.RestartPolicy?.Name || "no",
+      cmd: config.Cmd,
+      entrypoint: config.Entrypoint,
+      workingDir: config.WorkingDir,
+      labels,
+      compose,
+      created: data.Created,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── CONTAINER UPDATE (edit config + redeploy) ──────────────
+
+router.post("/update/:serverId/:containerName", async (req: Request, res: Response) => {
+  const { serverId, containerName } = req.params;
+  const { image, ports, env, volumes, restartPolicy, networks, cmd, compose } = req.body;
+
+  try {
+    const server = await getServer(serverId, req.auth!.workspaceId);
+
+    // If compose provided, write and deploy via compose
+    if (compose && compose.trim()) {
+      const composeDir = `/opt/obb-compose/${containerName}`;
+      await sshExec(server, `mkdir -p "${composeDir}"`);
+      await sshExec(server, `cat > "${composeDir}/docker-compose.yml" << 'CEOF'\n${compose}\nCEOF`);
+      await sshExec(server, `cd "${composeDir}" && docker compose down 2>/dev/null; docker compose up -d 2>&1`, 120000);
+      return res.json({ success: true, method: "compose", message: "Deployed via docker-compose" });
+    }
+
+    // Manual rebuild: stop old, recreate with new config
+    // Get current image if not provided
+    const currentImage = image || (await sshExec(server,
+      `docker inspect ${containerName} --format '{{.Config.Image}}' 2>/dev/null`));
+
+    // Stop and remove old
+    await sshExec(server, `docker stop ${containerName} 2>/dev/null; docker rm ${containerName} 2>/dev/null`);
+
+    // Pull latest
+    await sshExec(server, `docker pull ${currentImage} 2>&1`, 120000);
+
+    // Build run command
+    let runCmd = `docker run -d --name "${containerName}"`;
+    runCmd += ` --restart=${restartPolicy || "unless-stopped"}`;
+
+    // Network
+    if (networks?.length > 0) {
+      const primary = networks.find((n: string) => !["bridge", "host", "none"].includes(n)) || networks[0];
+      if (primary && primary !== "bridge") runCmd += ` --network=${primary}`;
+    }
+
+    // Ports
+    for (const p of ports || []) {
+      if (p.host && p.container) {
+        runCmd += ` -p ${p.host}:${p.container}/${p.protocol || "tcp"}`;
+      }
+    }
+
+    // Env
+    for (const e of env || []) {
+      if (e.key && !e.builtin) {
+        const val = e.value.replace(/"/g, '\\"');
+        runCmd += ` -e "${e.key}=${val}"`;
+      }
+    }
+
+    // Volumes
+    for (const v of volumes || []) {
+      if (v.name && v.destination) {
+        runCmd += ` -v "${v.name}:${v.destination}"`;
+      }
+    }
+
+    runCmd += ` ${currentImage}`;
+    if (cmd) runCmd += ` ${cmd}`;
+
+    const output = await sshExec(server, runCmd + " 2>&1");
+
+    // Connect to additional networks
+    if (networks?.length > 1) {
+      for (const net of networks.slice(1)) {
+        if (!["bridge", "host", "none"].includes(net)) {
+          await sshExec(server, `docker network connect ${net} ${containerName} 2>/dev/null || true`);
+        }
+      }
+    }
+
+    res.json({ success: true, method: "manual", containerId: output.trim().slice(0, 12) });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ─── CONTAINER LOGS ─────────────────────────────────────────
 
 router.get("/logs/:serverId/:containerId", async (req: Request, res: Response) => {

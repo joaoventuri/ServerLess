@@ -9,7 +9,7 @@ import { api } from "@/lib/api";
 import {
   Container, Cpu, MemoryStick, RefreshCw, Loader2, AlertCircle, CheckCircle2,
   Play, Square, Pause, RotateCw, Trash2, FileText, Search, Download,
-  Plus, X, Rocket, Star, ChevronDown, Network,
+  Plus, X, Rocket, Star, ChevronDown, Network, Settings2, Save, ChevronRight,
 } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 
@@ -85,6 +85,11 @@ export default function DockerPage() {
 
 // ─── Containers Tab ─────────────────────────────────────────
 
+interface InspectData {
+  name: string; image: string; ports: any[]; env: any[]; volumes: any[];
+  networks: string[]; restartPolicy: string; cmd: any; compose: string; labels: any;
+}
+
 function ContainersTab({ servers }: { servers: ServerItem[] }) {
   const [containers, setContainers] = useState<ContainerItem[]>([]);
   const [scanning, setScanning] = useState(false);
@@ -94,6 +99,16 @@ function ContainersTab({ servers }: { servers: ServerItem[] }) {
   const [logs, setLogs] = useState("");
   const [logsTitle, setLogsTitle] = useState("");
   const [loading, setLoading] = useState(true);
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const [inspectData, setInspectData] = useState<InspectData | null>(null);
+  const [inspecting, setInspecting] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [editEnv, setEditEnv] = useState<any[]>([]);
+  const [editPorts, setEditPorts] = useState<any[]>([]);
+  const [editVolumes, setEditVolumes] = useState<any[]>([]);
+  const [editRestart, setEditRestart] = useState("unless-stopped");
+  const [editCompose, setEditCompose] = useState("");
+  const [composeMode, setComposeMode] = useState(false);
 
   const load = () => api<ContainerItem[]>("/containers").then(setContainers).catch(() => {}).finally(() => setLoading(false));
   useEffect(() => { load(); const iv = setInterval(load, 10000); return () => clearInterval(iv); }, []);
@@ -110,7 +125,7 @@ function ContainersTab({ servers }: { servers: ServerItem[] }) {
     setTimeout(() => setToast(null), 8000);
   };
 
-  const action = async (serverId: string, containerId: string, act: string, name: string) => {
+  const doAction = async (serverId: string, containerId: string, act: string, name: string) => {
     if (act === "remove" && !confirm(`Remove container "${name}"?`)) return;
     setActing(`${containerId}-${act}`);
     try {
@@ -118,30 +133,53 @@ function ContainersTab({ servers }: { servers: ServerItem[] }) {
       setToast({ type: "success", message: `${act} "${name}" — success` });
       setTimeout(load, 1000);
     } catch (err: any) { setToast({ type: "error", message: err.message }); }
-    setActing(null);
-    setTimeout(() => setToast(null), 5000);
-  };
-
-  const redeploy = async (serverId: string, containerId: string, name: string) => {
-    if (!confirm(`Redeploy "${name}"? This will pull latest image and recreate the container.`)) return;
-    setActing(`${containerId}-redeploy`);
-    try {
-      const data = await api("/containers/redeploy", { method: "POST", body: { serverId, containerId } });
-      setToast({ type: "success", message: `Redeployed "${name}" — new ID: ${data.newId}` });
-      setTimeout(load, 2000);
-    } catch (err: any) { setToast({ type: "error", message: err.message }); }
-    setActing(null);
-    setTimeout(() => setToast(null), 5000);
+    setActing(null); setTimeout(() => setToast(null), 5000);
   };
 
   const viewLogs = async (serverId: string, containerId: string, name: string) => {
-    setLogsTitle(name);
-    setLogs("Loading...");
-    setLogsOpen(true);
+    setLogsTitle(name); setLogs("Loading..."); setLogsOpen(true);
+    try { const d = await api(`/containers/logs/${serverId}/${containerId}?tail=200`); setLogs(d.logs || "No logs"); }
+    catch (err: any) { setLogs(`Error: ${err.message}`); }
+  };
+
+  const toggleExpand = async (c: ContainerItem) => {
+    if (expanded === c.containerId) { setExpanded(null); setInspectData(null); return; }
+    setExpanded(c.containerId); setInspecting(true); setInspectData(null); setComposeMode(false);
     try {
-      const data = await api(`/containers/logs/${serverId}/${containerId}?tail=200`);
-      setLogs(data.logs || "No logs available");
-    } catch (err: any) { setLogs(`Error: ${err.message}`); }
+      const data = await api<InspectData>(`/containers/inspect/${c.server.id}/${c.name}`);
+      setInspectData(data);
+      setEditEnv(data.env.filter((e: any) => !e.builtin));
+      setEditPorts(data.ports.length > 0 ? data.ports : [{ host: "", container: "", protocol: "tcp" }]);
+      setEditVolumes(data.volumes.length > 0 ? data.volumes : [{ name: "", destination: "" }]);
+      setEditRestart(data.restartPolicy || "unless-stopped");
+      setEditCompose(data.compose || "");
+      if (data.compose) setComposeMode(true);
+    } catch (err: any) { setToast({ type: "error", message: err.message }); setExpanded(null); }
+    setInspecting(false);
+  };
+
+  const saveAndRedeploy = async (c: ContainerItem) => {
+    if (!confirm(`This will stop "${c.name}" and recreate it with the new config. Continue?`)) return;
+    setSaving(true);
+    try {
+      const body: any = {
+        image: inspectData?.image,
+        ports: editPorts.filter(p => p.host && p.container),
+        env: editEnv.filter(e => e.key),
+        volumes: editVolumes.filter(v => v.name && v.destination),
+        restartPolicy: editRestart,
+        networks: inspectData?.networks || [],
+      };
+      if (composeMode && editCompose.trim()) body.compose = editCompose;
+
+      const data = await api(`/containers/update/${c.server.id}/${c.name}`, { method: "POST", body });
+      setToast({ type: "success", message: data.method === "compose"
+        ? `Deployed "${c.name}" via docker-compose`
+        : `Redeployed "${c.name}" with new config — ID: ${data.containerId}` });
+      setExpanded(null); setInspectData(null);
+      setTimeout(load, 2000);
+    } catch (err: any) { setToast({ type: "error", message: err.message }); }
+    setSaving(false); setTimeout(() => setToast(null), 5000);
   };
 
   const statusBadge = (s: string) => {
@@ -168,7 +206,6 @@ function ContainersTab({ servers }: { servers: ServerItem[] }) {
           <CardContent className="p-8 text-center text-muted-foreground">
             <Container className="h-8 w-8 mx-auto mb-3 opacity-30" />
             <p className="mb-2">No containers found.</p>
-            <p className="text-xs mb-4">Click <strong>Scan Servers</strong> to discover containers via SSH.</p>
             <Button variant="outline" size="sm" onClick={scan} disabled={scanning}>
               {scanning ? <Loader2 className="h-3.5 w-3.5 mr-2 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5 mr-2" />}
               Scan Now
@@ -180,75 +217,182 @@ function ContainersTab({ servers }: { servers: ServerItem[] }) {
       <div className="space-y-2">
         {containers.map(c => {
           const busy = acting?.startsWith(c.containerId);
+          const isOpen = expanded === c.containerId;
           return (
-            <Card key={c.id} className="border-border/50">
-              <CardContent className="p-4">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-4 min-w-0">
+            <Card key={c.id} className={`border-border/50 transition-colors ${isOpen ? "border-primary/20" : ""}`}>
+              <CardContent className="p-0">
+                {/* Header row */}
+                <div className="flex items-center justify-between p-4">
+                  <button className="flex items-center gap-4 min-w-0 text-left" onClick={() => toggleExpand(c)}>
+                    <ChevronRight className={`h-4 w-4 shrink-0 text-muted-foreground transition-transform ${isOpen ? "rotate-90" : ""}`} />
                     <Container className={`h-5 w-5 shrink-0 ${c.status === "running" ? "text-primary" : "text-muted-foreground"}`} />
                     <div className="min-w-0">
                       <div className="font-medium text-sm flex items-center gap-2">
                         <span className="truncate">{c.name}</span>
                         <Badge variant={statusBadge(c.status)} className="text-[10px] shrink-0">{c.status}</Badge>
                       </div>
-                      <div className="text-xs text-muted-foreground font-mono truncate">
-                        {c.image} — {c.server.name}
-                      </div>
+                      <div className="text-xs text-muted-foreground font-mono truncate">{c.image} — {c.server.name}</div>
                     </div>
-                  </div>
-
+                  </button>
                   <div className="flex items-center gap-1.5 shrink-0">
-                    {/* Stats */}
                     <div className="hidden md:flex items-center gap-4 mr-4 text-xs font-mono text-muted-foreground">
                       <span className="flex items-center gap-1"><Cpu className="h-3 w-3 text-primary" />{c.cpuPercent.toFixed(1)}%</span>
                       <span className="flex items-center gap-1"><MemoryStick className="h-3 w-3 text-blue-400" />{c.ramUsageMb.toFixed(0)}MB</span>
-                      <span>{c.containerId.slice(0, 12)}</span>
                     </div>
-
-                    {/* Actions */}
                     {c.status === "running" && (
                       <>
-                        <Button size="icon" variant="ghost" className="h-7 w-7" disabled={busy}
-                          onClick={() => action(c.server.id, c.containerId, "pause", c.name)} title="Pause">
-                          <Pause className="h-3.5 w-3.5" />
-                        </Button>
-                        <Button size="icon" variant="ghost" className="h-7 w-7" disabled={busy}
-                          onClick={() => action(c.server.id, c.containerId, "stop", c.name)} title="Stop">
-                          <Square className="h-3.5 w-3.5" />
-                        </Button>
-                        <Button size="icon" variant="ghost" className="h-7 w-7" disabled={busy}
-                          onClick={() => action(c.server.id, c.containerId, "restart", c.name)} title="Restart">
-                          <RotateCw className="h-3.5 w-3.5" />
-                        </Button>
+                        <Button size="icon" variant="ghost" className="h-7 w-7" disabled={busy} onClick={() => doAction(c.server.id, c.containerId, "stop", c.name)} title="Stop"><Square className="h-3.5 w-3.5" /></Button>
+                        <Button size="icon" variant="ghost" className="h-7 w-7" disabled={busy} onClick={() => doAction(c.server.id, c.containerId, "restart", c.name)} title="Restart"><RotateCw className="h-3.5 w-3.5" /></Button>
                       </>
                     )}
                     {(c.status === "exited" || c.status === "created") && (
-                      <Button size="icon" variant="ghost" className="h-7 w-7 text-green-400" disabled={busy}
-                        onClick={() => action(c.server.id, c.containerId, "start", c.name)} title="Start">
-                        <Play className="h-3.5 w-3.5" />
-                      </Button>
+                      <Button size="icon" variant="ghost" className="h-7 w-7 text-green-400" disabled={busy} onClick={() => doAction(c.server.id, c.containerId, "start", c.name)} title="Start"><Play className="h-3.5 w-3.5" /></Button>
                     )}
                     {c.status === "paused" && (
-                      <Button size="icon" variant="ghost" className="h-7 w-7 text-green-400" disabled={busy}
-                        onClick={() => action(c.server.id, c.containerId, "unpause", c.name)} title="Unpause">
-                        <Play className="h-3.5 w-3.5" />
-                      </Button>
+                      <Button size="icon" variant="ghost" className="h-7 w-7 text-green-400" disabled={busy} onClick={() => doAction(c.server.id, c.containerId, "unpause", c.name)} title="Unpause"><Play className="h-3.5 w-3.5" /></Button>
                     )}
-
-                    <Button size="icon" variant="ghost" className="h-7 w-7" disabled={busy}
-                      onClick={() => redeploy(c.server.id, c.containerId, c.name)} title="Redeploy (pull latest + recreate)">
-                      <Rocket className="h-3.5 w-3.5 text-blue-400" />
-                    </Button>
-                    <Button size="icon" variant="ghost" className="h-7 w-7"
-                      onClick={() => viewLogs(c.server.id, c.containerId, c.name)} title="View Logs">
-                      <FileText className="h-3.5 w-3.5" />
-                    </Button>
-                    <Button size="icon" variant="ghost" className="h-7 w-7 text-muted-foreground hover:text-destructive" disabled={busy}
-                      onClick={() => action(c.server.id, c.containerId, "remove", c.name)} title="Remove">
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </Button>
+                    <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => viewLogs(c.server.id, c.containerId, c.name)} title="Logs"><FileText className="h-3.5 w-3.5" /></Button>
+                    <Button size="icon" variant="ghost" className="h-7 w-7 text-muted-foreground hover:text-destructive" disabled={busy} onClick={() => doAction(c.server.id, c.containerId, "remove", c.name)} title="Remove"><Trash2 className="h-3.5 w-3.5" /></Button>
                   </div>
                 </div>
+
+                {/* Expanded editor */}
+                {isOpen && (
+                  <div className="border-t border-border p-4 bg-[#0c0c0c]">
+                    {inspecting ? (
+                      <div className="flex items-center gap-2 text-sm text-muted-foreground py-4 justify-center">
+                        <Loader2 className="h-4 w-4 animate-spin" /> Loading container config...
+                      </div>
+                    ) : inspectData ? (
+                      <div className="space-y-4">
+                        {/* Mode toggle */}
+                        <div className="flex items-center gap-2">
+                          <button onClick={() => setComposeMode(false)} className={`px-3 py-1.5 rounded text-xs font-medium border transition-colors ${!composeMode ? "bg-primary/10 text-primary border-primary/30" : "bg-secondary text-muted-foreground border-border"}`}>
+                            <Settings2 className="h-3 w-3 inline mr-1" />Fields
+                          </button>
+                          <button onClick={() => setComposeMode(true)} className={`px-3 py-1.5 rounded text-xs font-medium border transition-colors ${composeMode ? "bg-primary/10 text-primary border-primary/30" : "bg-secondary text-muted-foreground border-border"}`}>
+                            <FileText className="h-3 w-3 inline mr-1" />Docker Compose
+                          </button>
+                          {inspectData.labels?.["com.docker.compose.project"] && (
+                            <span className="text-[10px] text-muted-foreground ml-2">Compose project: {inspectData.labels["com.docker.compose.project"]}</span>
+                          )}
+                        </div>
+
+                        {composeMode ? (
+                          /* Docker Compose editor */
+                          <div>
+                            <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">docker-compose.yml</label>
+                            <textarea
+                              className="mt-1 w-full rounded-md border border-border bg-black px-4 py-3 text-xs font-mono text-green-400 resize-y focus:outline-none focus:ring-1 focus:ring-ring"
+                              style={{ minHeight: "300px" }}
+                              value={editCompose}
+                              onChange={e => setEditCompose(e.target.value)}
+                              placeholder="Paste or edit your docker-compose.yml here..."
+                              spellCheck={false}
+                            />
+                            <p className="text-[10px] text-muted-foreground mt-1">Edit and save to redeploy via <code>docker compose up -d</code></p>
+                          </div>
+                        ) : (
+                          /* Field editor */
+                          <>
+                            {/* Image + Restart */}
+                            <div className="grid grid-cols-2 gap-3">
+                              <div>
+                                <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Image</label>
+                                <Input className="mt-1 font-mono text-xs" value={inspectData.image} readOnly />
+                              </div>
+                              <div>
+                                <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Restart Policy</label>
+                                <select className="mt-1 w-full rounded-md border border-border bg-card px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+                                  value={editRestart} onChange={e => setEditRestart(e.target.value)}>
+                                  <option value="no">No</option>
+                                  <option value="always">Always</option>
+                                  <option value="unless-stopped">Unless Stopped</option>
+                                  <option value="on-failure">On Failure</option>
+                                </select>
+                              </div>
+                            </div>
+
+                            {/* Ports */}
+                            <div>
+                              <div className="flex items-center justify-between">
+                                <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Ports</label>
+                                <Button size="sm" variant="ghost" className="h-6 text-xs" onClick={() => setEditPorts([...editPorts, { host: "", container: "", protocol: "tcp" }])}>
+                                  <Plus className="h-3 w-3 mr-1" />Add
+                                </Button>
+                              </div>
+                              {editPorts.map((p, i) => (
+                                <div key={i} className="flex gap-2 mt-1">
+                                  <Input className="font-mono text-xs" placeholder="Host" value={p.host} onChange={e => { const n = [...editPorts]; n[i] = { ...n[i], host: e.target.value }; setEditPorts(n); }} />
+                                  <span className="self-center text-muted-foreground text-xs">:</span>
+                                  <Input className="font-mono text-xs" placeholder="Container" value={p.container} onChange={e => { const n = [...editPorts]; n[i] = { ...n[i], container: e.target.value }; setEditPorts(n); }} />
+                                  <Button size="icon" variant="ghost" className="h-9 w-9 shrink-0" onClick={() => setEditPorts(editPorts.filter((_, j) => j !== i))}><X className="h-3 w-3" /></Button>
+                                </div>
+                              ))}
+                            </div>
+
+                            {/* Env vars */}
+                            <div>
+                              <div className="flex items-center justify-between">
+                                <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Environment Variables</label>
+                                <Button size="sm" variant="ghost" className="h-6 text-xs" onClick={() => setEditEnv([...editEnv, { key: "", value: "" }])}>
+                                  <Plus className="h-3 w-3 mr-1" />Add
+                                </Button>
+                              </div>
+                              {editEnv.map((e, i) => (
+                                <div key={i} className="flex gap-2 mt-1">
+                                  <Input className="font-mono text-xs w-1/3" placeholder="KEY" value={e.key} onChange={ev => { const n = [...editEnv]; n[i] = { ...n[i], key: ev.target.value }; setEditEnv(n); }} />
+                                  <span className="self-center text-muted-foreground text-xs">=</span>
+                                  <Input className="font-mono text-xs flex-1" placeholder="value" value={e.value} onChange={ev => { const n = [...editEnv]; n[i] = { ...n[i], value: ev.target.value }; setEditEnv(n); }} />
+                                  <Button size="icon" variant="ghost" className="h-9 w-9 shrink-0" onClick={() => setEditEnv(editEnv.filter((_, j) => j !== i))}><X className="h-3 w-3" /></Button>
+                                </div>
+                              ))}
+                            </div>
+
+                            {/* Volumes */}
+                            <div>
+                              <div className="flex items-center justify-between">
+                                <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Volumes</label>
+                                <Button size="sm" variant="ghost" className="h-6 text-xs" onClick={() => setEditVolumes([...editVolumes, { name: "", destination: "" }])}>
+                                  <Plus className="h-3 w-3 mr-1" />Add
+                                </Button>
+                              </div>
+                              {editVolumes.map((v, i) => (
+                                <div key={i} className="flex gap-2 mt-1">
+                                  <Input className="font-mono text-xs" placeholder="Volume/path" value={v.name} onChange={e => { const n = [...editVolumes]; n[i] = { ...n[i], name: e.target.value }; setEditVolumes(n); }} />
+                                  <span className="self-center text-muted-foreground text-xs">:</span>
+                                  <Input className="font-mono text-xs" placeholder="/container/path" value={v.destination} onChange={e => { const n = [...editVolumes]; n[i] = { ...n[i], destination: e.target.value }; setEditVolumes(n); }} />
+                                  <Button size="icon" variant="ghost" className="h-9 w-9 shrink-0" onClick={() => setEditVolumes(editVolumes.filter((_, j) => j !== i))}><X className="h-3 w-3" /></Button>
+                                </div>
+                              ))}
+                            </div>
+
+                            {/* Networks */}
+                            {inspectData.networks.length > 0 && (
+                              <div>
+                                <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Networks</label>
+                                <div className="flex gap-1.5 mt-1">
+                                  {inspectData.networks.map(n => (
+                                    <span key={n} className="px-2 py-0.5 rounded bg-secondary text-xs font-mono">{n}</span>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+                          </>
+                        )}
+
+                        {/* Save button */}
+                        <div className="flex gap-2 pt-2 border-t border-border">
+                          <Button className="flex-1" onClick={() => saveAndRedeploy(c)} disabled={saving}>
+                            {saving ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Save className="h-4 w-4 mr-2" />}
+                            {saving ? "Deploying..." : composeMode ? "Deploy Compose" : "Save & Redeploy"}
+                          </Button>
+                          <Button variant="outline" onClick={() => { setExpanded(null); setInspectData(null); }}>Cancel</Button>
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
+                )}
               </CardContent>
             </Card>
           );
@@ -259,13 +403,9 @@ function ContainersTab({ servers }: { servers: ServerItem[] }) {
       <Dialog open={logsOpen} onOpenChange={setLogsOpen}>
         <DialogContent className="max-w-3xl max-h-[80vh]">
           <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <FileText className="h-4 w-4" /> Logs — {logsTitle}
-            </DialogTitle>
+            <DialogTitle className="flex items-center gap-2"><FileText className="h-4 w-4" /> Logs — {logsTitle}</DialogTitle>
           </DialogHeader>
-          <pre className="bg-black rounded-lg p-4 text-xs font-mono text-green-400 overflow-auto max-h-[60vh] whitespace-pre-wrap">
-            {logs}
-          </pre>
+          <pre className="bg-black rounded-lg p-4 text-xs font-mono text-green-400 overflow-auto max-h-[60vh] whitespace-pre-wrap">{logs}</pre>
         </DialogContent>
       </Dialog>
     </>
