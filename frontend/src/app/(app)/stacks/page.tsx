@@ -245,8 +245,17 @@ function MarketplaceTab({ onDeploy }: { onDeploy: (t: Template) => void }) {
 
   return (
     <div>
-      {/* Search */}
-      <div className="flex gap-2 mb-4">
+      {/* Search + Category filter */}
+      <div className="flex gap-2 mb-6">
+        <select
+          className="rounded-md border border-border bg-card px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring shrink-0 w-40"
+          value={activeCategory}
+          onChange={e => selectCategory(e.target.value)}
+        >
+          {categories.map((c: any) => (
+            <option key={c.key} value={c.key}>{c.icon} {c.label}</option>
+          ))}
+        </select>
         <div className="flex-1 relative">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
           <Input className="pl-10" placeholder="Search apps..." value={search}
@@ -254,18 +263,6 @@ function MarketplaceTab({ onDeploy }: { onDeploy: (t: Template) => void }) {
             onKeyDown={e => e.key === "Enter" && doSearch()} />
         </div>
         <Button onClick={doSearch} disabled={loading}>Search</Button>
-      </div>
-
-      {/* Categories */}
-      <div className="flex gap-2 mb-6 overflow-x-auto pb-1">
-        {categories.map((c: any) => (
-          <button key={c.key} onClick={() => selectCategory(c.key)}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium whitespace-nowrap border transition-colors ${
-              activeCategory === c.key ? "bg-primary/10 text-primary border-primary/30" : "bg-secondary border-border text-muted-foreground hover:text-foreground"
-            }`}>
-            <span>{c.icon}</span> {c.label}
-          </button>
-        ))}
       </div>
 
       {/* Grid */}
