@@ -345,24 +345,26 @@ function TerminalDialog({ serverId, onClose }: { serverId: string; onClose: () =
       // Delay fit slightly to ensure DOM is ready
       setTimeout(() => { try { fitAddon.fit(); } catch {} }, 100);
 
-      // Custom key handler for clipboard
+      // Clipboard: Ctrl+Shift+C = copy, Ctrl+V = paste (no double paste)
       term.attachCustomKeyEventHandler((e: KeyboardEvent) => {
+        if (e.type !== "keydown") return true;
+
         // Ctrl+Shift+C → copy selection
-        if (e.type === "keydown" && e.ctrlKey && e.shiftKey && e.key === "C") {
+        if (e.ctrlKey && e.shiftKey && e.key === "C") {
           const sel = term.getSelection();
           if (sel) navigator.clipboard.writeText(sel);
           return false;
         }
-        // Ctrl+Shift+V or Ctrl+V → paste
-        if (e.type === "keydown" && ((e.ctrlKey && e.shiftKey && e.key === "V") || (e.ctrlKey && e.key === "v"))) {
+
+        // Ctrl+V → paste (we handle it manually, block browser default)
+        if (e.ctrlKey && (e.key === "v" || e.key === "V") && !e.shiftKey) {
+          e.preventDefault();
           navigator.clipboard.readText().then(text => {
-            if (ws?.readyState === WebSocket.OPEN) ws.send(text);
+            if (text && ws?.readyState === WebSocket.OPEN) ws.send(text);
           });
           return false;
         }
-        // Ctrl+C → let terminal handle it (sends SIGINT)
-        // Ctrl+D → let terminal handle it (sends EOF)
-        // Ctrl+L → let terminal handle it (clear screen)
+
         return true;
       });
 
