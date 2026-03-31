@@ -610,14 +610,20 @@ function DeployTab({ servers, onDeployed, initialImage }: { servers: ServerItem[
         {/* Volumes */}
         <div>
           <div className="flex items-center justify-between mb-1">
-            <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Volumes</label>
+            <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+              Volumes <span className="normal-case text-muted-foreground/60">(persistent data)</span>
+            </label>
             <Button size="sm" variant="ghost" className="h-6 text-xs" onClick={() => addRow(setVolumes, { host: "", container: "" })}>
               <Plus className="h-3 w-3 mr-1" /> Add
             </Button>
           </div>
+          <p className="text-[10px] text-muted-foreground mb-1.5">
+            Auto-detected from image. Without volumes, <strong>all data is lost</strong> when the container restarts.
+            Even if left empty, the system will auto-create named volumes for any paths declared by the image.
+          </p>
           {volumes.map((v, i) => (
             <div key={i} className="flex gap-2 mb-1.5">
-              <Input placeholder="/host/path" value={v.host} onChange={e => updateRow(setVolumes, i, "host", e.target.value)} className="font-mono" />
+              <Input placeholder="volume_name or /host/path" value={v.host} onChange={e => updateRow(setVolumes, i, "host", e.target.value)} className="font-mono" />
               <span className="self-center text-muted-foreground text-xs">:</span>
               <Input placeholder="/container/path" value={v.container} onChange={e => updateRow(setVolumes, i, "container", e.target.value)} className="font-mono" />
               {volumes.length > 1 && (

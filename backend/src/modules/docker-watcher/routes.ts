@@ -575,10 +575,27 @@ router.post("/deploy", async (req: Request, res: Response) => {
     }
 
     // Volumes: [{host: "/data", container: "/app/data"}]
-    if (volumes && Array.isArray(volumes)) {
-      for (const v of volumes) {
-        if (v.host && v.container) cmd += ` -v "${v.host}:${v.container}"`;
+    const validVolumes = (volumes || []).filter((v: any) => v.host && v.container);
+    if (validVolumes.length > 0) {
+      for (const v of validVolumes) {
+        cmd += ` -v "${v.host}:${v.container}"`;
       }
+    } else {
+      // Auto-create named volumes for any VOLUME declared in the image
+      // This prevents data loss — containers always get persistent storage
+      const containerName = name || image.replace(/[^a-zA-Z0-9]/g, "_").replace(/:.*/, "");
+      const inspectVolumes = await sshExec(server,
+        `docker inspect --type=image ${image} --format '{{json .Config.Volumes}}' 2>/dev/null || echo "null"`
+      ).catch(() => "null");
+      try {
+        const declaredVolumes = JSON.parse(inspectVolumes);
+        if (declaredVolumes && typeof declaredVolumes === "object") {
+          for (const mountPath of Object.keys(declaredVolumes)) {
+            const volName = `${containerName}_${mountPath.replace(/\//g, "_").replace(/^_/, "")}`;
+            cmd += ` -v "${volName}:${mountPath}"`;
+          }
+        }
+      } catch { /* no declared volumes */ }
     }
 
     cmd += ` ${image}`;
