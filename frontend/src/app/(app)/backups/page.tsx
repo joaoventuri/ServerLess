@@ -279,11 +279,12 @@ function BackupsTab({ servers, containers }: { servers: ServerItem[]; containers
         </DialogContent>
       </Dialog>
 
-      {/* Import dialog */}
+      {/* Import dialog — full review form */}
       <Dialog open={importOpen} onOpenChange={setImportOpen}>
-        <DialogContent className="max-w-md">
+        <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
           <DialogHeader><DialogTitle>Restore Backup</DialogTitle></DialogHeader>
           <div className="space-y-4 mt-4">
+            {/* Select backup */}
             <div>
               <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Backup</label>
               <select className="mt-1 w-full rounded-md border border-border bg-card px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
@@ -294,20 +295,135 @@ function BackupsTab({ servers, containers }: { servers: ServerItem[]; containers
                 ))}
               </select>
             </div>
-            <div>
-              <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Target Server</label>
-              <select className="mt-1 w-full rounded-md border border-border bg-card px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
-                value={importForm.targetServerId} onChange={e => setImportForm({ ...importForm, targetServerId: e.target.value })}>
-                <option value="">Select server...</option>
-                {servers.map(s => <option key={s.id} value={s.id}>{s.name} ({s.host})</option>)}
-              </select>
-            </div>
-            <div className="rounded-lg bg-yellow-500/10 border border-yellow-500/20 px-4 py-3 text-xs text-yellow-400">
-              Restore will recreate all containers, networks and volumes from the backup. Existing containers with the same names will be replaced.
-            </div>
+
+            {/* Show backup contents */}
+            {importForm.backupId && (() => {
+              const backup = backups.find(b => b.id === importForm.backupId);
+              if (!backup?.metadata) return null;
+              let manifest: any;
+              try { manifest = JSON.parse(backup.metadata); } catch { return null; }
+
+              return (
+                <>
+                  {/* Backup info */}
+                  <div className="rounded-lg border border-border bg-card/50 p-4">
+                    <div className="flex items-center gap-3 mb-3">
+                      <Archive className="h-5 w-5 text-primary" />
+                      <div>
+                        <div className="font-medium text-sm">{backup.name}</div>
+                        <div className="text-xs text-muted-foreground">
+                          {fmtSize(backup.fileSizeMb)} — {new Date(backup.createdAt).toLocaleString()} — from {backup.serverName}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="flex gap-3 text-xs text-muted-foreground">
+                      <span className="flex items-center gap-1"><Container className="h-3 w-3" />{manifest.containers?.length || 0} container(s)</span>
+                      <span className="flex items-center gap-1"><HardDrive className="h-3 w-3" />{manifest.containers?.reduce((a: number, c: any) => a + (c.volumes?.length || 0), 0)} volume(s)</span>
+                      {manifest.networks?.length > 0 && <span>{manifest.networks.length} network(s)</span>}
+                    </div>
+                  </div>
+
+                  {/* Container details */}
+                  <div>
+                    <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-2 block">What will be restored</label>
+                    <div className="space-y-2">
+                      {(manifest.containers || []).map((c: any, ci: number) => (
+                        <div key={ci} className="rounded-lg border border-border bg-[#0c0c0c] p-3">
+                          <div className="flex items-center gap-2 mb-2">
+                            <Container className="h-4 w-4 text-primary" />
+                            <span className="font-mono text-sm font-medium">{c.name}</span>
+                            <span className="text-[10px] text-muted-foreground">{c.image}</span>
+                          </div>
+
+                          {/* Ports */}
+                          {Object.keys(c.ports || {}).length > 0 && (
+                            <div className="mb-2">
+                              <span className="text-[10px] text-muted-foreground uppercase">Ports</span>
+                              <div className="flex gap-1 mt-0.5 flex-wrap">
+                                {Object.entries(c.ports || {}).map(([cp, hps]: [string, any]) => (
+                                  (hps as string[]).map((hp: string, pi: number) => (
+                                    <span key={`${cp}-${pi}`} className="px-1.5 py-0.5 rounded bg-secondary text-[10px] font-mono">{hp}:{cp}</span>
+                                  ))
+                                ))}
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Env vars */}
+                          {(c.env || []).length > 0 && (
+                            <div className="mb-2">
+                              <span className="text-[10px] text-muted-foreground uppercase">Environment ({c.env.length})</span>
+                              <div className="mt-0.5 max-h-24 overflow-y-auto">
+                                {c.env.filter((e: string) => !e.startsWith("PATH=") && !e.startsWith("HOME=") && !e.startsWith("HOSTNAME=")).map((e: string, ei: number) => {
+                                  const eq = e.indexOf("=");
+                                  const k = eq > 0 ? e.slice(0, eq) : e;
+                                  const v = eq > 0 ? e.slice(eq + 1) : "";
+                                  return (
+                                    <div key={ei} className="text-[10px] font-mono py-0.5 flex gap-1">
+                                      <span className="text-primary">{k}</span>
+                                      <span className="text-muted-foreground">=</span>
+                                      <span className="text-foreground/70 truncate">{v.length > 50 ? v.slice(0, 50) + "..." : v}</span>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Volumes */}
+                          {(c.volumes || []).length > 0 && (
+                            <div className="mb-2">
+                              <span className="text-[10px] text-muted-foreground uppercase">Volumes (data included)</span>
+                              <div className="flex gap-1 mt-0.5 flex-wrap">
+                                {c.volumes.map((v: any, vi: number) => (
+                                  <span key={vi} className="px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-400 text-[10px] font-mono flex items-center gap-1">
+                                    <HardDrive className="h-2.5 w-2.5" />{v.name}:{v.destination}
+                                  </span>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Networks */}
+                          {(c.networks || []).filter((n: string) => !["bridge","host","none"].includes(n)).length > 0 && (
+                            <div>
+                              <span className="text-[10px] text-muted-foreground uppercase">Networks</span>
+                              <div className="flex gap-1 mt-0.5">
+                                {c.networks.filter((n: string) => !["bridge","host","none"].includes(n)).map((n: string, ni: number) => (
+                                  <span key={ni} className="px-1.5 py-0.5 rounded bg-secondary text-[10px] font-mono">{n}</span>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+
+                          <div className="text-[10px] text-muted-foreground mt-1">restart: {c.restartPolicy || "no"}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Target server */}
+                  <div>
+                    <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Restore to Server</label>
+                    <select className="mt-1 w-full rounded-md border border-border bg-card px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+                      value={importForm.targetServerId} onChange={e => setImportForm({ ...importForm, targetServerId: e.target.value })}>
+                      <option value="">Select server...</option>
+                      {servers.map(s => <option key={s.id} value={s.id}>{s.name} ({s.host})</option>)}
+                    </select>
+                  </div>
+
+                  <div className="rounded-lg bg-primary/5 border border-primary/20 px-4 py-3 text-xs text-primary/80">
+                    <strong>Full mirror restore:</strong> Containers will be recreated with the exact same image, ports, env vars, networks, and restart policy.
+                    Volume data (databases, uploads, configs) will be restored from the backup tar archives. Existing containers with the same names will be replaced.
+                  </div>
+                </>
+              );
+            })()}
+
             <Button className="w-full" onClick={doImport} disabled={importing || !importForm.backupId || !importForm.targetServerId}>
               {importing ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Upload className="h-4 w-4 mr-2" />}
-              {importing ? "Restoring..." : "Restore Backup"}
+              {importing ? "Restoring..." : "Restore Full Backup"}
             </Button>
           </div>
         </DialogContent>
