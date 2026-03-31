@@ -420,62 +420,40 @@ router.post("/update/:serverId/:containerName", async (req: Request, res: Respon
       return res.json({ success: true, method: "compose", message: "Deployed via docker-compose" });
     }
 
-    // Manual rebuild: stop old, recreate with new config
-    // Get current image if not provided
+    // Generate compose from fields and deploy via compose (more reliable than docker run)
     const currentImage = image || (await sshExec(server,
       `docker inspect ${containerName} --format '{{.Config.Image}}' 2>/dev/null`));
 
-    // Stop and remove old
-    await sshExec(server, `docker stop ${containerName} 2>/dev/null; docker rm ${containerName} 2>/dev/null`);
+    const generatedCompose = generateComposeFromInspect({
+      name: containerName,
+      image: currentImage,
+      ports: (ports || []).filter((p: any) => p.host && p.container),
+      env: (env || []).filter((e: any) => e.key && !e.builtin),
+      volumes: (volumes || []).filter((v: any) => v.name && v.destination),
+      networks: networks || [],
+      restartPolicy: restartPolicy || "unless-stopped",
+      cmd: cmd ? cmd.split(" ") : null,
+      workingDir: "",
+      labels: {},
+    });
 
-    // Pull latest
-    await sshExec(server, `docker pull ${currentImage} 2>&1`, 120000);
+    const composeDir = `/opt/obb-compose/${containerName}`;
+    await sshExec(server, `mkdir -p "${composeDir}"`);
 
-    // Build run command
-    let runCmd = `docker run -d --name "${containerName}"`;
-    runCmd += ` --restart=${restartPolicy || "unless-stopped"}`;
+    // Write compose via base64 to avoid escaping issues
+    const b64 = Buffer.from(generatedCompose).toString("base64");
+    await sshExec(server, `rm -f "${composeDir}/docker-compose.yml.b64" "${composeDir}/docker-compose.yml"`);
+    await sshExec(server, `printf '%s' '${b64}' > "${composeDir}/docker-compose.yml.b64"`);
+    await sshExec(server, `base64 -d "${composeDir}/docker-compose.yml.b64" > "${composeDir}/docker-compose.yml" && rm -f "${composeDir}/docker-compose.yml.b64"`);
 
-    // Network
-    if (networks?.length > 0) {
-      const primary = networks.find((n: string) => !["bridge", "host", "none"].includes(n)) || networks[0];
-      if (primary && primary !== "bridge") runCmd += ` --network=${primary}`;
-    }
+    // Detect compose command
+    const cc = await sshExec(server, `docker compose version 2>/dev/null && echo V2OK || true`).catch(() => "");
+    const composeCmd = cc.includes("V2OK") ? "docker compose" : "docker-compose";
 
-    // Ports
-    for (const p of ports || []) {
-      if (p.host && p.container) {
-        runCmd += ` -p ${p.host}:${p.container}/${p.protocol || "tcp"}`;
-      }
-    }
-
-    // Env
-    for (const e of env || []) {
-      if (e.key && !e.builtin) {
-        const val = e.value.replace(/"/g, '\\"');
-        runCmd += ` -e "${e.key}=${val}"`;
-      }
-    }
-
-    // Volumes
-    for (const v of volumes || []) {
-      if (v.name && v.destination) {
-        runCmd += ` -v "${v.name}:${v.destination}"`;
-      }
-    }
-
-    runCmd += ` ${currentImage}`;
-    if (cmd) runCmd += ` ${cmd}`;
-
-    const output = await sshExec(server, runCmd + " 2>&1");
-
-    // Connect to additional networks
-    if (networks?.length > 1) {
-      for (const net of networks.slice(1)) {
-        if (!["bridge", "host", "none"].includes(net)) {
-          await sshExec(server, `docker network connect ${net} ${containerName} 2>/dev/null || true`);
-        }
-      }
-    }
+    // Stop old container and deploy via compose
+    await sshExec(server, `docker stop ${containerName} 2>/dev/null; docker rm ${containerName} 2>/dev/null || true`);
+    const output = await sshExec(server,
+      `cd "${composeDir}" && ${composeCmd} pull 2>&1; ${composeCmd} up -d 2>&1`, 120000);
 
     // Re-scan to pick up new container in DB
     await quickRescan(server);
