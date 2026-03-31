@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -279,51 +279,121 @@ function ServerForm({
   );
 }
 
-// ─── Terminal dialog ────────────────────────────────────────
+// ─── Terminal dialog (xterm.js with full addon stack) ───────
 
 function TerminalDialog({ serverId, onClose }: { serverId: string; onClose: () => void }) {
+  const termRef = useRef<HTMLDivElement>(null);
+  const [connected, setConnected] = useState(false);
+
   useEffect(() => {
     let ws: WebSocket | null = null;
     let term: any = null;
+    let fitAddon: any = null;
+    let resizeHandler: (() => void) | null = null;
 
     async function init() {
       const { Terminal } = await import("@xterm/xterm");
       const { FitAddon } = await import("@xterm/addon-fit");
+      const { WebLinksAddon } = await import("@xterm/addon-web-links");
+      const { ClipboardAddon } = await import("@xterm/addon-clipboard");
+      const { Unicode11Addon } = await import("@xterm/addon-unicode11");
 
-      const container = document.getElementById("obb-terminal");
-      if (!container) return;
+      if (!termRef.current) return;
 
       term = new Terminal({
         cursorBlink: true,
+        cursorStyle: "bar",
+        cursorWidth: 2,
+        scrollback: 10000,
         fastScrollModifier: "shift",
-        scrollback: 5000,
+        macOptionIsMeta: true,
+        allowProposedApi: true,
+        rightClickSelectsWord: true,
         theme: {
           background: "#0a0a0a",
-          foreground: "#e5e5e5",
+          foreground: "#d4d4d4",
           cursor: "#22c55e",
-          selectionBackground: "#22c55e33",
+          cursorAccent: "#0a0a0a",
+          selectionBackground: "#22c55e40",
+          selectionForeground: "#ffffff",
           black: "#0a0a0a",
+          red: "#ef4444",
           green: "#22c55e",
+          yellow: "#eab308",
+          blue: "#3b82f6",
+          magenta: "#a855f7",
+          cyan: "#06b6d4",
+          white: "#d4d4d4",
+          brightBlack: "#525252",
+          brightRed: "#f87171",
+          brightGreen: "#4ade80",
+          brightYellow: "#facc15",
+          brightBlue: "#60a5fa",
+          brightMagenta: "#c084fc",
+          brightCyan: "#22d3ee",
+          brightWhite: "#fafafa",
         },
-        fontFamily: "JetBrains Mono, monospace",
-        fontSize: 13,
+        fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Menlo', monospace",
+        fontSize: 14,
+        fontWeight: "400",
+        fontWeightBold: "600",
+        lineHeight: 1.2,
+        letterSpacing: 0,
       });
 
-      const fitAddon = new FitAddon();
+      // Load addons
+      fitAddon = new FitAddon();
       term.loadAddon(fitAddon);
-      term.open(container);
+      term.loadAddon(new WebLinksAddon());
+      term.loadAddon(new Unicode11Addon());
+      term.unicode.activeVersion = "11";
+
+      // Clipboard addon for native copy/paste
+      try { term.loadAddon(new ClipboardAddon()); } catch { /* browser may block */ }
+
+      // Try WebGL renderer for GPU acceleration
+      try {
+        const { WebglAddon } = await import("@xterm/addon-webgl");
+        term.loadAddon(new WebglAddon());
+      } catch { /* fallback to canvas */ }
+
+      term.open(termRef.current);
       fitAddon.fit();
 
+      // Custom key handler for clipboard
+      term.attachCustomKeyEventHandler((e: KeyboardEvent) => {
+        // Ctrl+Shift+C → copy selection
+        if (e.type === "keydown" && e.ctrlKey && e.shiftKey && e.key === "C") {
+          const sel = term.getSelection();
+          if (sel) navigator.clipboard.writeText(sel);
+          return false;
+        }
+        // Ctrl+Shift+V or Ctrl+V → paste
+        if (e.type === "keydown" && ((e.ctrlKey && e.shiftKey && e.key === "V") || (e.ctrlKey && e.key === "v"))) {
+          navigator.clipboard.readText().then(text => {
+            if (ws?.readyState === WebSocket.OPEN) ws.send(text);
+          });
+          return false;
+        }
+        // Ctrl+C → let terminal handle it (sends SIGINT)
+        // Ctrl+D → let terminal handle it (sends EOF)
+        // Ctrl+L → let terminal handle it (clear screen)
+        return true;
+      });
+
+      // Connect WebSocket
       const token = localStorage.getItem("obb_token");
-      // WebSocket connects directly to backend (Next.js proxy doesn't support WS upgrades)
       const backendHost = window.location.hostname + ":3001";
       ws = new WebSocket(`ws://${backendHost}/ws/terminal?token=${token}&serverId=${serverId}`);
       ws.binaryType = "arraybuffer";
 
-      term.write("\x1b[33mConnecting to server...\x1b[0m\r\n");
+      term.write("\x1b[38;2;34;197;94m● Connecting...\x1b[0m\r\n");
 
       ws.onopen = () => {
-        term.write("\x1b[32mWebSocket connected. Establishing SSH session...\x1b[0m\r\n");
+        setConnected(true);
+        // Send initial terminal size
+        const dims = fitAddon.proposeDimensions();
+        if (dims) ws?.send(JSON.stringify({ type: "resize", cols: dims.cols, rows: dims.rows }));
       };
 
       ws.onmessage = (e) => {
@@ -335,52 +405,72 @@ function TerminalDialog({ serverId, onClose }: { serverId: string; onClose: () =
       };
 
       ws.onerror = () => {
-        term.write("\r\n\x1b[31mWebSocket error — could not reach backend at " + backendHost + "\x1b[0m\r\n");
+        term.write("\r\n\x1b[38;2;239;68;68m● Connection error\x1b[0m\r\n");
       };
 
       ws.onclose = (ev) => {
-        const reason = ev.reason || (ev.code === 1006 ? "Connection lost" : `Closed (code ${ev.code})`);
-        term.write(`\r\n\x1b[31m${reason}\x1b[0m\r\n`);
+        setConnected(false);
+        const reason = ev.reason || (ev.code === 1006 ? "Connection lost" : `Disconnected (${ev.code})`);
+        term.write(`\r\n\x1b[38;2;239;68;68m● ${reason}\x1b[0m\r\n`);
+        term.write("\x1b[38;2;115;115;115mPress any key to reconnect or close the terminal.\x1b[0m\r\n");
       };
 
+      // Send input to SSH
       term.onData((data: string) => {
         if (ws?.readyState === WebSocket.OPEN) ws.send(data);
       });
 
-      // Enable Ctrl+V paste
-      term.attachCustomKeyEventHandler((e: KeyboardEvent) => {
-        if (e.type === "keydown" && e.ctrlKey && e.key === "v") {
-          navigator.clipboard.readText().then(text => {
-            if (ws?.readyState === WebSocket.OPEN) ws.send(text);
-          });
-          return false;
-        }
-        // Ctrl+C should pass through to terminal
-        return true;
-      });
+      // Sync terminal size with SSH
       term.onResize(({ cols, rows }: { cols: number; rows: number }) => {
-        if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "resize", cols, rows }));
+        if (ws?.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: "resize", cols, rows }));
+        }
       });
 
-      const onResize = () => fitAddon.fit();
-      window.addEventListener("resize", onResize);
+      // Auto-resize on window resize
+      resizeHandler = () => fitAddon?.fit();
+      window.addEventListener("resize", resizeHandler);
+
+      // Focus terminal
+      term.focus();
     }
 
     init();
-    return () => { ws?.close(); term?.dispose(); };
+
+    return () => {
+      if (resizeHandler) window.removeEventListener("resize", resizeHandler);
+      ws?.close();
+      term?.dispose();
+    };
   }, [serverId]);
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-8">
-      <div className="w-full max-w-5xl bg-[#0a0a0a] border border-border rounded-lg overflow-hidden">
-        <div className="flex items-center justify-between px-4 py-2 border-b border-border bg-card">
-          <div className="flex items-center gap-2">
-            <Terminal className="h-4 w-4 text-primary" />
-            <span className="text-sm font-mono text-muted-foreground">Web Terminal</span>
+    <div className="fixed inset-0 z-50 bg-black/90 backdrop-blur-sm flex items-center justify-center p-4 md:p-8">
+      <div className="w-full max-w-6xl h-[85vh] bg-[#0a0a0a] border border-border rounded-lg overflow-hidden flex flex-col shadow-2xl shadow-black/50">
+        {/* Title bar */}
+        <div className="flex items-center justify-between px-4 py-2 border-b border-border bg-[#111] shrink-0">
+          <div className="flex items-center gap-3">
+            {/* macOS-style dots */}
+            <div className="flex items-center gap-1.5">
+              <button onClick={onClose} className="w-3 h-3 rounded-full bg-red-500 hover:bg-red-400 transition-colors" title="Close" />
+              <div className="w-3 h-3 rounded-full bg-yellow-500 opacity-50" />
+              <div className={`w-3 h-3 rounded-full transition-colors ${connected ? "bg-green-500" : "bg-gray-600"}`} />
+            </div>
+            <div className="flex items-center gap-2 ml-2">
+              <Terminal className="h-3.5 w-3.5 text-muted-foreground" />
+              <span className="text-xs font-mono text-muted-foreground">SSH Terminal</span>
+            </div>
           </div>
-          <Button size="sm" variant="ghost" onClick={onClose}>Close</Button>
+          <div className="flex items-center gap-2 text-[10px] text-muted-foreground/50">
+            <span>Ctrl+Shift+C: copy</span>
+            <span>|</span>
+            <span>Ctrl+V: paste</span>
+            <span>|</span>
+            <span>Ctrl+C: SIGINT</span>
+          </div>
         </div>
-        <div id="obb-terminal" className="h-[500px]" />
+        {/* Terminal */}
+        <div ref={termRef} className="flex-1 p-1" />
       </div>
     </div>
   );
