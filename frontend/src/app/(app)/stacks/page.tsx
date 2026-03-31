@@ -80,6 +80,9 @@ function MyStacksTab({ servers }: { servers: ServerItem[] }) {
   const [toast, setToast] = useState<{ type: "success" | "error"; message: string } | null>(null);
   const [editId, setEditId] = useState<string | null>(null);
   const [editCompose, setEditCompose] = useState("");
+  const [logsId, setLogsId] = useState<string | null>(null);
+  const [logs, setLogs] = useState("");
+  const [logsLoading, setLogsLoading] = useState(false);
 
   const load = () => api<StackItem[]>("/stacks").then(setStacks).catch(() => {}).finally(() => setLoading(false));
   useEffect(() => { load(); const iv = setInterval(load, 8000); return () => clearInterval(iv); }, []);
@@ -98,6 +101,28 @@ function MyStacksTab({ servers }: { servers: ServerItem[] }) {
     } catch (err: any) { setToast({ type: "error", message: err.message }); }
     setActing(null);
     setTimeout(() => setToast(null), 5000);
+  };
+
+  const viewLogs = async (id: string) => {
+    if (logsId === id) { setLogsId(null); return; }
+    setLogsId(id);
+    setLogs("Loading...");
+    setLogsLoading(true);
+    try {
+      const d = await api(`/stacks/${id}/logs?tail=200`);
+      setLogs(d.logs || "No logs available");
+    } catch (err: any) { setLogs(`Error: ${err.message}`); }
+    setLogsLoading(false);
+  };
+
+  const refreshLogs = async () => {
+    if (!logsId) return;
+    setLogsLoading(true);
+    try {
+      const d = await api(`/stacks/${logsId}/logs?tail=200`);
+      setLogs(d.logs || "No logs available");
+    } catch (err: any) { setLogs(`Error: ${err.message}`); }
+    setLogsLoading(false);
   };
 
   const saveEdit = async (id: string) => {
@@ -172,14 +197,38 @@ function MyStacksTab({ servers }: { servers: ServerItem[] }) {
                         onClick={() => doAction(s.id, "start")} title="Start"><Play className="h-3.5 w-3.5" /></Button>
                     )}
                     {s.status === "deploying" && <Loader2 className="h-4 w-4 animate-spin text-yellow-400" />}
+                    <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => viewLogs(s.id)} title="Logs">
+                      <FileText className={`h-3.5 w-3.5 ${logsId === s.id ? "text-primary" : ""}`} />
+                    </Button>
                     <Button size="icon" variant="ghost" className="h-7 w-7" disabled={busy}
-                      onClick={() => { setEditId(isEditing ? null : s.id); setEditCompose(s.compose); }} title="Edit Compose">
+                      onClick={() => { setEditId(isEditing ? null : s.id); setEditCompose(s.compose); setLogsId(null); }} title="Edit Compose">
                       <Pencil className="h-3.5 w-3.5" />
                     </Button>
                     <Button size="icon" variant="ghost" className="h-7 w-7 text-muted-foreground hover:text-destructive" disabled={busy}
                       onClick={() => doAction(s.id, "delete")} title="Delete"><Trash2 className="h-3.5 w-3.5" /></Button>
                   </div>
                 </div>
+
+                {/* Logs panel */}
+                {logsId === s.id && (
+                  <div className="border-t border-border p-4 bg-[#0c0c0c]">
+                    <div className="flex items-center justify-between mb-2">
+                      <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider flex items-center gap-2">
+                        <FileText className="h-3 w-3" /> Stack Logs
+                      </label>
+                      <div className="flex gap-2">
+                        <Button size="sm" variant="ghost" className="h-6 text-xs" onClick={refreshLogs} disabled={logsLoading}>
+                          {logsLoading ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : <RotateCw className="h-3 w-3 mr-1" />}
+                          Refresh
+                        </Button>
+                        <Button size="sm" variant="ghost" className="h-6 text-xs" onClick={() => setLogsId(null)}>Close</Button>
+                      </div>
+                    </div>
+                    <pre className="bg-black rounded-lg p-4 text-xs font-mono text-green-400 overflow-auto max-h-[400px] whitespace-pre-wrap">
+                      {logs}
+                    </pre>
+                  </div>
+                )}
 
                 {/* Edit compose */}
                 {isEditing && (

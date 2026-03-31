@@ -134,10 +134,22 @@ async function deployStack(stackId: string, server: any, name: string, compose: 
 
     console.log(`[Stack] Deployed "${name}": ${output.slice(-200)}`);
 
-    // Get running container names
-    const ps = await sshExec(server,
-      `cd "${stackDir}" && docker compose ps --format "{{.Name}}" 2>/dev/null`);
-    const containerNames = ps.split("\n").filter(Boolean);
+    // Wait for containers to start, then get names (retry a few times)
+    let containerNames: string[] = [];
+    for (let i = 0; i < 5; i++) {
+      await new Promise(r => setTimeout(r, 3000));
+      const ps = await sshExec(server,
+        `cd "${stackDir}" && docker compose ps --format "{{.Name}}" 2>/dev/null`).catch(() => "");
+      containerNames = ps.split("\n").filter(Boolean);
+      if (containerNames.length > 0) break;
+    }
+
+    // Fallback: parse service names from compose if ps failed
+    if (containerNames.length === 0) {
+      containerNames = extractServiceNames(compose);
+    }
+
+    console.log(`[Stack] "${name}" containers: ${containerNames.join(", ")}`);
 
     await prisma.stack.update({
       where: { id: stackId },
@@ -259,21 +271,45 @@ router.get("/:id/status", async (req: Request, res: Response) => {
   res.json({ containers, total: containers.length });
 });
 
+// ─── Stack logs ─────────────────────────────────────────────
+
+router.get("/:id/logs", async (req: Request, res: Response) => {
+  const stack = await prisma.stack.findFirst({
+    where: { id: req.params.id, workspaceId: req.auth!.workspaceId },
+  });
+  if (!stack) return res.status(404).json({ error: "Stack not found" });
+
+  const server = await prisma.server.findUnique({ where: { id: stack.serverId } });
+  if (!server) return res.status(404).json({ error: "Server not found" });
+
+  const tail = parseInt(req.query.tail as string) || 150;
+  const stackDir = `/opt/obb-stacks/${stack.name.replace(/[^a-zA-Z0-9_-]/g, "_")}`;
+
+  try {
+    const logs = await sshExec(server,
+      `cd "${stackDir}" && docker compose logs --tail ${tail} --no-color 2>&1`, 15000);
+    res.json({ logs });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ─── Helper ─────────────────────────────────────────────────
 
 function extractServiceNames(compose: string): string[] {
   const names: string[] = [];
   const lines = compose.split("\n");
   let inServices = false;
-  let indent = 0;
 
   for (const line of lines) {
+    // Detect "services:" at top level (no leading spaces)
     if (line.match(/^services:\s*$/)) { inServices = true; continue; }
     if (inServices) {
-      const match = line.match(/^  (\w[\w-]*):\s*$/);
+      // Service name: exactly 2 spaces (or 1 tab) + word + colon
+      const match = line.match(/^[ \t]{1,4}([\w][\w.-]*):\s*$/);
       if (match) names.push(match[1]);
-      // Stop at next top-level key
-      if (line.match(/^\w/) && !line.startsWith(" ")) inServices = false;
+      // Stop at next top-level key (no indent)
+      if (line.match(/^[a-z]/) && !line.match(/^\s/)) inServices = false;
     }
   }
   return names;

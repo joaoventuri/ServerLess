@@ -29,7 +29,8 @@
       "Bash(gh repo:*)",
       "Bash(git push:*)",
       "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:3002/domains)",
-      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:3002/backups)"
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:3002/backups)",
+      "Bash(curl -s \"http://localhost:3001/api/stacks/72a37e99-1d3e-4104-97e1-1c356b31bc11/status\" -H \"Authorization: Bearer $TOKEN\")"
     ]
   }
 }
