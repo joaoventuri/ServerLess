@@ -412,10 +412,13 @@ function ContainersTab({ servers }: { servers: ServerItem[] }) {
 
                           {pullLatest && (
                             <div>
+                              <p className="text-[10px] text-muted-foreground">
+                                Uses saved credentials from the first deploy. If pull fails, add new credentials below.
+                              </p>
                               <button onClick={() => setShowRegAuth(!showRegAuth)}
-                                className="flex items-center gap-2 text-xs text-muted-foreground hover:text-foreground transition-colors">
+                                className="flex items-center gap-2 text-xs text-muted-foreground hover:text-foreground transition-colors mt-1">
                                 <ChevronRight className={`h-3 w-3 transition-transform ${showRegAuth ? "rotate-90" : ""}`} />
-                                Private Registry Authentication
+                                Override Registry Credentials
                               </button>
                               {showRegAuth && (
                                 <div className="grid grid-cols-2 gap-2 mt-2">
