@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "OpsBigBro — Infrastructure Command Center",
+  title: "ServerLess — Infrastructure Command Center",
   description: "Unified server management, credential vault, monitoring & cloud IDE",
 };
 

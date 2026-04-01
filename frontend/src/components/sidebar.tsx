@@ -32,6 +32,7 @@ const navigation = [
   { name: "Backups", href: "/backups", icon: Archive },
   { name: "Cloud IDE", href: "/ide", icon: Code2 },
   { name: "Webhooks", href: "/webhooks", icon: Bell },
+  { name: "Settings", href: "/settings", icon: Settings },
 ];
 
 export function Sidebar() {

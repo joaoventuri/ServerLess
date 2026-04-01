@@ -20,6 +20,7 @@ import cloudIdeRoutes, { ideProxyMiddleware } from "./modules/cloud-ide/routes";
 import domainRoutes from "./modules/domains/routes";
 import backupRoutes from "./modules/backups/routes";
 import stackRoutes from "./modules/stacks/routes";
+import platformExportRoutes from "./modules/platform-export/routes";
 import { startBackupWorker } from "./modules/backups/worker";
 
 const app = express();
@@ -27,7 +28,7 @@ const server = http.createServer(app);
 
 // Middleware
 app.use(cors({ origin: env.FRONTEND_URL, credentials: true }));
-app.use(express.json({ limit: "10mb" }));
+app.use(express.json({ limit: "100mb" }));
 
 // Public routes
 app.use("/api/auth", authRoutes);
@@ -46,6 +47,7 @@ app.use("/api/webhooks", authMiddleware, webhookRoutes);
 app.use("/api/ide", authMiddleware, cloudIdeRoutes);
 app.use("/api/domains", authMiddleware, domainRoutes);
 app.use("/api/stacks", authMiddleware, stackRoutes);
+app.use("/api/platform", authMiddleware, platformExportRoutes);
 // Backup download accepts ?token= query param (browser can't send Auth header on direct links)
 app.use("/api/backups", (req, res, next) => {
   if (!req.headers.authorization && req.query.token) {

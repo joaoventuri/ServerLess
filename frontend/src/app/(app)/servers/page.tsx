@@ -290,9 +290,11 @@ function TerminalDialog({ serverId, onClose }: { serverId: string; onClose: () =
     let term: any = null;
     let fitAddon: any = null;
     let resizeHandler: (() => void) | null = null;
+    let resizeObserver: ResizeObserver | null = null;
 
     async function init() {
       const { Terminal } = await import("@xterm/xterm");
+      await import("@xterm/xterm/css/xterm.css");
       const { FitAddon } = await import("@xterm/addon-fit");
 
       if (!termRef.current) return;
@@ -301,9 +303,19 @@ function TerminalDialog({ serverId, onClose }: { serverId: string; onClose: () =
         cursorBlink: true,
         cursorStyle: "bar",
         cursorWidth: 2,
+        cursorInactiveStyle: "outline",
         scrollback: 10000,
-        fastScrollModifier: "shift",
+        smoothScrollDuration: 100,
+        fastScrollSensitivity: 5,
+        scrollOnUserInput: true,
         macOptionIsMeta: true,
+        rightClickSelectsWord: true,
+        altClickMovesCursor: true,
+        convertEol: false,
+        customGlyphs: true,
+        drawBoldTextInBrightColors: true,
+        minimumContrastRatio: 4.5,
+        allowTransparency: true,
         theme: {
           background: "#0a0a0a",
           foreground: "#d4d4d4",
@@ -311,6 +323,7 @@ function TerminalDialog({ serverId, onClose }: { serverId: string; onClose: () =
           cursorAccent: "#0a0a0a",
           selectionBackground: "#22c55e40",
           selectionForeground: "#ffffff",
+          selectionInactiveBackground: "#22c55e20",
           black: "#0a0a0a",
           red: "#ef4444",
           green: "#22c55e",
@@ -327,25 +340,53 @@ function TerminalDialog({ serverId, onClose }: { serverId: string; onClose: () =
           brightMagenta: "#c084fc",
           brightCyan: "#22d3ee",
           brightWhite: "#fafafa",
+          scrollbarSliderBackground: "#22c55e30",
+          scrollbarSliderHoverBackground: "#22c55e50",
+          scrollbarSliderActiveBackground: "#22c55e70",
         },
         fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Menlo', monospace",
         fontSize: 14,
+        fontWeight: "400",
+        fontWeightBold: "700",
         lineHeight: 1.2,
+        letterSpacing: 0,
       });
 
-      // Core addon
+      // Load addons
       fitAddon = new FitAddon();
       term.loadAddon(fitAddon);
 
-      // Optional addons (don't crash if they fail)
-      try { const { WebLinksAddon } = await import("@xterm/addon-web-links"); term.loadAddon(new WebLinksAddon()); } catch {}
-      try { const { Unicode11Addon } = await import("@xterm/addon-unicode11"); term.loadAddon(new Unicode11Addon()); term.unicode.activeVersion = "11"; } catch {}
+      // WebGL renderer for GPU-accelerated rendering
+      try {
+        const { WebglAddon } = await import("@xterm/addon-webgl");
+        const webgl = new WebglAddon();
+        webgl.onContextLoss(() => { webgl.dispose(); });
+        term.loadAddon(webgl);
+      } catch {}
+
+      // Clickable links
+      try {
+        const { WebLinksAddon } = await import("@xterm/addon-web-links");
+        term.loadAddon(new WebLinksAddon());
+      } catch {}
+
+      // Unicode 11 support
+      try {
+        const { Unicode11Addon } = await import("@xterm/addon-unicode11");
+        term.loadAddon(new Unicode11Addon());
+        term.unicode.activeVersion = "11";
+      } catch {}
+
+      // Clipboard addon (OSC 52)
+      try {
+        const { ClipboardAddon } = await import("@xterm/addon-clipboard");
+        term.loadAddon(new ClipboardAddon());
+      } catch {}
 
       term.open(termRef.current);
-      // Delay fit slightly to ensure DOM is ready
-      setTimeout(() => { try { fitAddon.fit(); } catch {} }, 100);
+      setTimeout(() => { try { fitAddon.fit(); } catch {} }, 50);
 
-      // Clipboard: Ctrl+Shift+C = copy, Ctrl+V = paste (no double paste)
+      // Clipboard: Ctrl+Shift+C = copy, Ctrl+V = paste
       term.attachCustomKeyEventHandler((e: KeyboardEvent) => {
         if (e.type !== "keydown") return true;
 
@@ -356,11 +397,13 @@ function TerminalDialog({ serverId, onClose }: { serverId: string; onClose: () =
           return false;
         }
 
-        // Ctrl+V → paste (we handle it manually, block browser default)
+        // Ctrl+V → paste with bracket paste mode (so backspace works per-char)
         if (e.ctrlKey && (e.key === "v" || e.key === "V") && !e.shiftKey) {
           e.preventDefault();
-          navigator.clipboard.readText().then(text => {
-            if (text && ws?.readyState === WebSocket.OPEN) ws.send(text);
+          navigator.clipboard.readText().then((text: string) => {
+            if (text && ws?.readyState === WebSocket.OPEN) {
+              ws.send("\x1b[200~" + text + "\x1b[201~");
+            }
           });
           return false;
         }
@@ -378,12 +421,11 @@ function TerminalDialog({ serverId, onClose }: { serverId: string; onClose: () =
 
       ws.onopen = () => {
         setConnected(true);
-        // Send initial terminal size
         const dims = fitAddon.proposeDimensions();
         if (dims) ws?.send(JSON.stringify({ type: "resize", cols: dims.cols, rows: dims.rows }));
       };
 
-      ws.onmessage = (e) => {
+      ws.onmessage = (e: MessageEvent) => {
         if (e.data instanceof ArrayBuffer) {
           term.write(new Uint8Array(e.data));
         } else {
@@ -395,7 +437,7 @@ function TerminalDialog({ serverId, onClose }: { serverId: string; onClose: () =
         term.write("\r\n\x1b[38;2;239;68;68m● Connection error\x1b[0m\r\n");
       };
 
-      ws.onclose = (ev) => {
+      ws.onclose = (ev: CloseEvent) => {
         setConnected(false);
         const reason = ev.reason || (ev.code === 1006 ? "Connection lost" : `Disconnected (${ev.code})`);
         term.write(`\r\n\x1b[38;2;239;68;68m● ${reason}\x1b[0m\r\n`);
@@ -414,11 +456,13 @@ function TerminalDialog({ serverId, onClose }: { serverId: string; onClose: () =
         }
       });
 
-      // Auto-resize on window resize
-      resizeHandler = () => fitAddon?.fit();
+      // Auto-resize on window resize + container resize
+      resizeHandler = () => { try { fitAddon?.fit(); } catch {} };
       window.addEventListener("resize", resizeHandler);
 
-      // Focus terminal
+      resizeObserver = new ResizeObserver(resizeHandler);
+      resizeObserver.observe(termRef.current);
+
       term.focus();
     }
 
@@ -426,6 +470,7 @@ function TerminalDialog({ serverId, onClose }: { serverId: string; onClose: () =
 
     return () => {
       if (resizeHandler) window.removeEventListener("resize", resizeHandler);
+      resizeObserver?.disconnect();
       ws?.close();
       term?.dispose();
     };
@@ -437,7 +482,6 @@ function TerminalDialog({ serverId, onClose }: { serverId: string; onClose: () =
         {/* Title bar */}
         <div className="flex items-center justify-between px-4 py-2 border-b border-border bg-[#111] shrink-0">
           <div className="flex items-center gap-3">
-            {/* macOS-style dots */}
             <div className="flex items-center gap-1.5">
               <button onClick={onClose} className="w-3 h-3 rounded-full bg-red-500 hover:bg-red-400 transition-colors" title="Close" />
               <div className="w-3 h-3 rounded-full bg-yellow-500 opacity-50" />
@@ -457,7 +501,7 @@ function TerminalDialog({ serverId, onClose }: { serverId: string; onClose: () =
           </div>
         </div>
         {/* Terminal */}
-        <div ref={termRef} className="flex-1 p-1" />
+        <div ref={termRef} className="flex-1 min-h-0" />
       </div>
     </div>
   );
