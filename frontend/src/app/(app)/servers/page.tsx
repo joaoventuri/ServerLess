@@ -414,8 +414,11 @@ function TerminalDialog({ serverId, onClose }: { serverId: string; onClose: () =
 
       // Connect WebSocket
       const token = localStorage.getItem("obb_token");
-      const backendHost = window.location.hostname + ":3001";
-      ws = new WebSocket(`ws://${backendHost}/ws/terminal?token=${token}&serverId=${serverId}`);
+      const wsProto = window.location.protocol === "https:" ? "wss:" : "ws:";
+      const wsHost = window.location.hostname === "localhost"
+        ? `${window.location.hostname}:3001`
+        : window.location.host;
+      ws = new WebSocket(`${wsProto}//${wsHost}/ws/terminal?token=${token}&serverId=${serverId}`);
       ws.binaryType = "arraybuffer";
 
       term.write("\x1b[38;2;34;197;94m● Connecting...\x1b[0m\r\n");
