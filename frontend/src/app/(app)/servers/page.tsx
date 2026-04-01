@@ -11,6 +11,7 @@ import {
   Plus, Terminal, Trash2, Code2, Copy, Server as ServerIcon,
   Plug, CheckCircle2, XCircle, Loader2, Pencil,
 } from "lucide-react";
+import "@xterm/xterm/css/xterm.css";
 
 interface ServerItem {
   id: string; name: string; description?: string; host: string; port: number;
@@ -294,7 +295,6 @@ function TerminalDialog({ serverId, onClose }: { serverId: string; onClose: () =
 
     async function init() {
       const { Terminal } = await import("@xterm/xterm");
-      await import("@xterm/xterm/css/xterm.css");
       const { FitAddon } = await import("@xterm/addon-fit");
 
       if (!termRef.current) return;
@@ -340,6 +340,7 @@ function TerminalDialog({ serverId, onClose }: { serverId: string; onClose: () =
           brightMagenta: "#c084fc",
           brightCyan: "#22d3ee",
           brightWhite: "#fafafa",
+          // @ts-expect-error -- scrollbar theming available in xterm 5.6+
           scrollbarSliderBackground: "#22c55e30",
           scrollbarSliderHoverBackground: "#22c55e50",
           scrollbarSliderActiveBackground: "#22c55e70",
