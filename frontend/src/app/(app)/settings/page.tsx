@@ -43,6 +43,11 @@ export default function SettingsPage() {
       const file = (e.target as HTMLInputElement).files?.[0];
       if (!file) return;
 
+      const confirmed = window.confirm(
+        "WARNING: This will overwrite ALL existing data (users, servers, credentials, webhooks, etc.) with the data from the export file. This action cannot be undone.\n\nAre you sure you want to continue?"
+      );
+      if (!confirmed) return;
+
       setImporting(true);
       setResult(null);
       try {

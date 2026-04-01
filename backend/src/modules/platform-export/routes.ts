@@ -115,142 +115,137 @@ router.post("/import", async (req: Request, res: Response) => {
 
   try {
     await prisma.$transaction(async (tx) => {
-      // 1. Users — match by email, replace with exported id + data
+      // Wipe all existing data (order matters for FK constraints)
+      await tx.ping.deleteMany();
+      await tx.metric.deleteMany();
+      await tx.container.deleteMany();
+      await tx.agentToken.deleteMany();
+      await tx.credential.deleteMany();
+      await tx.vaultGroup.deleteMany();
+      await tx.healthCheck.deleteMany();
+      await tx.domain.deleteMany();
+      await tx.backup.deleteMany();
+      await tx.backupSchedule.deleteMany();
+      await tx.stack.deleteMany();
+      await tx.webhook.deleteMany();
+      await tx.workspaceMember.deleteMany();
+      await tx.server.deleteMany();
+      await tx.workspace.deleteMany();
+      await tx.user.deleteMany();
+
+      // 1. Users
       for (const user of data.users || []) {
-        const d = { ...user, createdAt: new Date(user.createdAt), updatedAt: new Date(user.updatedAt) };
-        const existing = await tx.user.findUnique({ where: { email: user.email } });
-        if (existing && existing.id !== user.id) {
-          // Different id, same email — update all references then delete old
-          await tx.workspaceMember.updateMany({ where: { userId: existing.id }, data: { userId: user.id } });
-          await tx.user.delete({ where: { id: existing.id } });
-        }
-        await tx.user.upsert({ where: { id: user.id }, create: d, update: d });
+        await tx.user.create({ data: { ...user, createdAt: new Date(user.createdAt), updatedAt: new Date(user.updatedAt) } });
         stats.users++;
       }
 
-      // 2. Workspaces — match by slug, replace with exported id + data
+      // 2. Workspaces
       for (const ws of data.workspaces || []) {
-        const d = { ...ws, createdAt: new Date(ws.createdAt), updatedAt: new Date(ws.updatedAt) };
-        const existing = await tx.workspace.findUnique({ where: { slug: ws.slug } });
-        if (existing && existing.id !== ws.id) {
-          // Migrate all references from old id to new id
-          await tx.workspaceMember.updateMany({ where: { workspaceId: existing.id }, data: { workspaceId: ws.id } });
-          await tx.server.updateMany({ where: { workspaceId: existing.id }, data: { workspaceId: ws.id } });
-          await tx.vaultGroup.updateMany({ where: { workspaceId: existing.id }, data: { workspaceId: ws.id } });
-          await tx.healthCheck.updateMany({ where: { workspaceId: existing.id }, data: { workspaceId: ws.id } });
-          await tx.webhook.updateMany({ where: { workspaceId: existing.id }, data: { workspaceId: ws.id } });
-          await tx.domain.updateMany({ where: { workspaceId: existing.id }, data: { workspaceId: ws.id } });
-          await tx.backup.updateMany({ where: { workspaceId: existing.id }, data: { workspaceId: ws.id } });
-          await tx.backupSchedule.updateMany({ where: { workspaceId: existing.id }, data: { workspaceId: ws.id } });
-          await tx.stack.updateMany({ where: { workspaceId: existing.id }, data: { workspaceId: ws.id } });
-          await tx.workspace.delete({ where: { id: existing.id } });
-        }
-        await tx.workspace.upsert({ where: { id: ws.id }, create: d, update: d });
+        await tx.workspace.create({ data: { ...ws, createdAt: new Date(ws.createdAt), updatedAt: new Date(ws.updatedAt) } });
         stats.workspaces++;
       }
 
       // 3. Workspace members
       for (const wm of data.workspaceMembers || []) {
-        const d = { ...wm, joinedAt: new Date(wm.joinedAt) };
-        await tx.workspaceMember.upsert({
-          where: { userId_workspaceId: { userId: wm.userId, workspaceId: wm.workspaceId } },
-          create: d,
-          update: d,
-        });
+        await tx.workspaceMember.create({ data: { ...wm, joinedAt: new Date(wm.joinedAt) } });
       }
 
       // 4. Servers
       for (const server of data.servers || []) {
-        const d = {
-          ...server,
-          lastSeenAt: server.lastSeenAt ? new Date(server.lastSeenAt) : null,
-          createdAt: new Date(server.createdAt),
-          updatedAt: new Date(server.updatedAt),
-        };
-        await tx.server.upsert({ where: { id: server.id }, create: d, update: d });
+        await tx.server.create({
+          data: {
+            ...server,
+            lastSeenAt: server.lastSeenAt ? new Date(server.lastSeenAt) : null,
+            createdAt: new Date(server.createdAt),
+            updatedAt: new Date(server.updatedAt),
+          },
+        });
         stats.servers++;
       }
 
       // 5. Agent tokens
       for (const at of data.agentTokens || []) {
-        const d = { ...at, createdAt: new Date(at.createdAt) };
-        await tx.agentToken.upsert({ where: { id: at.id }, create: d, update: d });
+        await tx.agentToken.create({ data: { ...at, createdAt: new Date(at.createdAt) } });
       }
 
       // 6. Containers
       for (const c of data.containers || []) {
-        const d = { ...c, lastUpdatedAt: new Date(c.lastUpdatedAt), createdAt: new Date(c.createdAt) };
-        await tx.container.upsert({
-          where: { serverId_containerId: { serverId: c.serverId, containerId: c.containerId } },
-          create: d,
-          update: d,
+        await tx.container.create({
+          data: { ...c, lastUpdatedAt: new Date(c.lastUpdatedAt), createdAt: new Date(c.createdAt) },
         });
       }
 
       // 7. Vault groups + credentials
       for (const vg of data.vaultGroups || []) {
-        const d = { ...vg, createdAt: new Date(vg.createdAt), updatedAt: new Date(vg.updatedAt) };
-        await tx.vaultGroup.upsert({ where: { id: vg.id }, create: d, update: d });
+        await tx.vaultGroup.create({
+          data: { ...vg, createdAt: new Date(vg.createdAt), updatedAt: new Date(vg.updatedAt) },
+        });
       }
       for (const cred of data.credentials || []) {
-        const d = { ...cred, createdAt: new Date(cred.createdAt), updatedAt: new Date(cred.updatedAt) };
-        await tx.credential.upsert({ where: { id: cred.id }, create: d, update: d });
+        await tx.credential.create({
+          data: { ...cred, createdAt: new Date(cred.createdAt), updatedAt: new Date(cred.updatedAt) },
+        });
         stats.credentials++;
       }
 
       // 8. Health checks + pings
       for (const hc of data.healthChecks || []) {
-        const d = {
-          ...hc,
-          sslExpiresAt: hc.sslExpiresAt ? new Date(hc.sslExpiresAt) : null,
-          lastCheckedAt: hc.lastCheckedAt ? new Date(hc.lastCheckedAt) : null,
-          createdAt: new Date(hc.createdAt),
-          updatedAt: new Date(hc.updatedAt),
-        };
-        await tx.healthCheck.upsert({ where: { id: hc.id }, create: d, update: d });
+        await tx.healthCheck.create({
+          data: {
+            ...hc,
+            sslExpiresAt: hc.sslExpiresAt ? new Date(hc.sslExpiresAt) : null,
+            lastCheckedAt: hc.lastCheckedAt ? new Date(hc.lastCheckedAt) : null,
+            createdAt: new Date(hc.createdAt),
+            updatedAt: new Date(hc.updatedAt),
+          },
+        });
         stats.healthChecks++;
       }
       for (const ping of data.pings || []) {
-        const d = { ...ping, checkedAt: new Date(ping.checkedAt) };
-        await tx.ping.upsert({ where: { id: ping.id }, create: d, update: d });
+        await tx.ping.create({ data: { ...ping, checkedAt: new Date(ping.checkedAt) } });
       }
 
       // 9. Webhooks
       for (const wh of data.webhooks || []) {
-        const d = { ...wh, createdAt: new Date(wh.createdAt), updatedAt: new Date(wh.updatedAt) };
-        await tx.webhook.upsert({ where: { id: wh.id }, create: d, update: d });
+        await tx.webhook.create({
+          data: { ...wh, createdAt: new Date(wh.createdAt), updatedAt: new Date(wh.updatedAt) },
+        });
         stats.webhooks++;
       }
 
       // 10. Domains
       for (const d of data.domains || []) {
-        const dd = { ...d, createdAt: new Date(d.createdAt), updatedAt: new Date(d.updatedAt) };
-        await tx.domain.upsert({ where: { domain: d.domain }, create: dd, update: dd });
+        await tx.domain.create({
+          data: { ...d, createdAt: new Date(d.createdAt), updatedAt: new Date(d.updatedAt) },
+        });
         stats.domains++;
       }
 
       // 11. Backups (metadata only)
       for (const b of data.backups || []) {
-        const d = { ...b, createdAt: new Date(b.createdAt), completedAt: b.completedAt ? new Date(b.completedAt) : null };
-        await tx.backup.upsert({ where: { id: b.id }, create: d, update: d });
+        await tx.backup.create({
+          data: { ...b, createdAt: new Date(b.createdAt), completedAt: b.completedAt ? new Date(b.completedAt) : null },
+        });
       }
 
       // 12. Backup schedules
       for (const bs of data.backupSchedules || []) {
-        const d = {
-          ...bs,
-          lastRunAt: bs.lastRunAt ? new Date(bs.lastRunAt) : null,
-          createdAt: new Date(bs.createdAt),
-          updatedAt: new Date(bs.updatedAt),
-        };
-        await tx.backupSchedule.upsert({ where: { id: bs.id }, create: d, update: d });
+        await tx.backupSchedule.create({
+          data: {
+            ...bs,
+            lastRunAt: bs.lastRunAt ? new Date(bs.lastRunAt) : null,
+            createdAt: new Date(bs.createdAt),
+            updatedAt: new Date(bs.updatedAt),
+          },
+        });
         stats.backupSchedules++;
       }
 
       // 13. Stacks
       for (const s of data.stacks || []) {
-        const d = { ...s, createdAt: new Date(s.createdAt), updatedAt: new Date(s.updatedAt) };
-        await tx.stack.upsert({ where: { id: s.id }, create: d, update: d });
+        await tx.stack.create({
+          data: { ...s, createdAt: new Date(s.createdAt), updatedAt: new Date(s.updatedAt) },
+        });
         stats.stacks++;
       }
 
