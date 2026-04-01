@@ -13,10 +13,10 @@ log "🔄 Checking for updates..."
 cd "$REPO_DIR"
 
 # Fetch latest
-git fetch origin main
+git fetch origin master
 
 LOCAL=$(git rev-parse HEAD)
-REMOTE=$(git rev-parse origin/main)
+REMOTE=$(git rev-parse origin/master)
 
 if [ "$LOCAL" = "$REMOTE" ]; then
     log "✅ Already up to date"
@@ -26,7 +26,7 @@ fi
 log "🆕 New version available, updating..."
 
 # Pull latest
-git pull origin main
+git pull origin master
 
 # Install dependencies
 log "📦 Installing backend dependencies..."
