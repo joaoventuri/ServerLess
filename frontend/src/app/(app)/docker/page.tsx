@@ -163,6 +163,92 @@ function ContainersTab({ servers }: { servers: ServerItem[] }) {
     setInspecting(false);
   };
 
+  const syncComposeToFields = (yaml: string) => {
+    const lines = yaml.split("\n");
+    let svcImage = "";
+    let svcRestart = "";
+    const svcPorts: any[] = [];
+    const svcEnvs: any[] = [];
+    const svcVolumes: any[] = [];
+
+    let servicesLineIdx = -1;
+    let serviceNameIdx = -1;
+    let serviceIndent = 0;
+
+    for (let i = 0; i < lines.length; i++) {
+      const stripped = lines[i].replace(/#.*$/, "").trimEnd();
+      if (!stripped.trim()) continue;
+      if (stripped.trim() === "services:") { servicesLineIdx = i; continue; }
+      if (servicesLineIdx >= 0 && serviceNameIdx < 0) {
+        const indent = stripped.length - stripped.trimStart().length;
+        const m = stripped.trim().match(/^([\w][\w.-]*):\s*$/);
+        if (m && indent > 0) { serviceNameIdx = i; serviceIndent = indent; break; }
+      }
+    }
+    if (serviceNameIdx < 0) return;
+
+    let currentSection = "";
+    const propIndent = serviceIndent * 2;
+
+    for (let i = serviceNameIdx + 1; i < lines.length; i++) {
+      const raw = lines[i];
+      const stripped = raw.replace(/#.*$/, "").trimEnd();
+      if (!stripped.trim()) continue;
+      const indent = raw.length - raw.trimStart().length;
+      if (indent <= serviceIndent && stripped.trim().match(/^[\w]/)) break;
+      const trimmed = stripped.trim();
+
+      if (indent <= propIndent + 2 && trimmed.match(/^[\w][\w_-]*:/)) {
+        const key = trimmed.split(":")[0].trim();
+        const val = trimmed.split(":").slice(1).join(":").trim();
+        if (key === "image") { svcImage = val; currentSection = ""; continue; }
+        if (key === "restart") { svcRestart = val; currentSection = ""; continue; }
+        if (key === "ports") { currentSection = "ports"; continue; }
+        if (key === "environment") { currentSection = "env"; continue; }
+        if (key === "volumes" && indent < propIndent + 4) { currentSection = "volumes"; continue; }
+        if (["depends_on", "healthcheck", "command", "entrypoint", "networks", "labels", "deploy", "build", "logging", "container_name"].includes(key)) {
+          currentSection = ""; continue;
+        }
+        if (currentSection === "env" && !["test", "interval", "timeout", "retries", "start_period", "condition"].includes(key)) {
+          let v = val;
+          const defMatch = v.match(/\$\{([^:}]+)(?::[-=]([^}]*))?\}/);
+          if (defMatch) v = defMatch[2] || "";
+          svcEnvs.push({ key, value: v });
+          continue;
+        }
+        continue;
+      }
+
+      if (trimmed.startsWith("-")) {
+        const item = trimmed.replace(/^-\s*/, "").replace(/^["']|["']$/g, "");
+        if (currentSection === "ports") {
+          const parts = item.split(":");
+          if (parts.length >= 2) {
+            svcPorts.push({
+              host: parts[0],
+              container: parts[1].split("/")[0],
+              protocol: parts[1].includes("/") ? parts[1].split("/")[1] : "tcp",
+            });
+          }
+        }
+        if (currentSection === "env") {
+          const eq = item.indexOf("=");
+          if (eq > 0) svcEnvs.push({ key: item.slice(0, eq), value: item.slice(eq + 1) });
+        }
+        if (currentSection === "volumes") {
+          const parts = item.split(":");
+          if (parts.length >= 2) svcVolumes.push({ name: parts[0], destination: parts[1] });
+        }
+      }
+    }
+
+    if (svcImage && inspectData) setInspectData({ ...inspectData, image: svcImage });
+    if (svcPorts.length > 0) setEditPorts(svcPorts); else setEditPorts([{ host: "", container: "", protocol: "tcp" }]);
+    if (svcEnvs.length > 0) setEditEnv(svcEnvs); else setEditEnv([]);
+    if (svcVolumes.length > 0) setEditVolumes(svcVolumes); else setEditVolumes([{ name: "", destination: "" }]);
+    if (svcRestart) setEditRestart(svcRestart);
+  };
+
   const saveAndRedeploy = async (c: ContainerItem) => {
     if (!confirm(`This will stop "${c.name}" and recreate it with the new config. Continue?`)) return;
     setSaving(true);
@@ -308,6 +394,7 @@ function ContainersTab({ servers }: { servers: ServerItem[] }) {
                                 style={{ minHeight: "300px" }}
                                 value={editCompose}
                                 onChange={e => setEditCompose(e.target.value)}
+                                onBlur={() => syncComposeToFields(editCompose)}
                                 spellCheck={false}
                               />
                               <p className="text-[10px] text-muted-foreground mt-1">Edit freely and deploy — runs <code className="text-primary/70">docker compose up -d</code> on the server</p>

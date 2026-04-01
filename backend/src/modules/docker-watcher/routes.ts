@@ -426,10 +426,10 @@ router.post("/update/:serverId/:containerName", async (req: Request, res: Respon
       // Write via base64 to preserve ${VAR} syntax and special characters
       const composeB64 = Buffer.from(compose).toString("base64");
       await sshExec(server, `printf '%s' '${composeB64}' | base64 -d > "${composeDir}/docker-compose.yml"`);
-      await sshExec(server, `cd "${composeDir}" && ${loginCmd}docker compose down --remove-orphans 2>/dev/null; ${pullLatest ? "docker compose pull 2>&1;" : ""} docker compose up -d 2>&1`, 120000);
+      const deployOut = await sshExec(server, `cd "${composeDir}" && ${loginCmd}docker compose down --remove-orphans 2>/dev/null; ${pullLatest ? "docker compose pull 2>&1 &&" : ""} docker compose up -d --force-recreate --remove-orphans 2>&1`, 120000);
       // Re-scan to pick up new containers
       await quickRescan(server);
-      return res.json({ success: true, method: "compose", message: "Deployed via docker-compose" });
+      return res.json({ success: true, method: "compose", message: "Deployed via docker-compose", output: deployOut });
     }
 
     // Generate compose from fields and deploy via compose (more reliable than docker run)
@@ -465,7 +465,7 @@ router.post("/update/:serverId/:containerName", async (req: Request, res: Respon
     // Stop old container and deploy via compose
     await sshExec(server, `docker stop ${containerName} 2>/dev/null; docker rm ${containerName} 2>/dev/null || true`);
     const output = await sshExec(server,
-      `cd "${composeDir}" && ${loginCmd}${pullLatest ? `${composeCmd} pull 2>&1;` : ""} ${composeCmd} up -d 2>&1`, 120000);
+      `cd "${composeDir}" && ${loginCmd}${pullLatest ? `${composeCmd} pull 2>&1 &&` : ""} ${composeCmd} up -d --force-recreate 2>&1`, 120000);
 
     // Re-scan to pick up new container in DB
     await quickRescan(server);
