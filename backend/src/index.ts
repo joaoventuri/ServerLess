@@ -21,6 +21,7 @@ import domainRoutes from "./modules/domains/routes";
 import backupRoutes from "./modules/backups/routes";
 import stackRoutes from "./modules/stacks/routes";
 import platformExportRoutes from "./modules/platform-export/routes";
+import updaterRoutes from "./modules/updater/routes";
 import { startBackupWorker } from "./modules/backups/worker";
 
 const app = express();
@@ -48,6 +49,7 @@ app.use("/api/ide", authMiddleware, cloudIdeRoutes);
 app.use("/api/domains", authMiddleware, domainRoutes);
 app.use("/api/stacks", authMiddleware, stackRoutes);
 app.use("/api/platform", authMiddleware, platformExportRoutes);
+app.use("/api/updater", authMiddleware, updaterRoutes);
 // Backup download accepts ?token= query param (browser can't send Auth header on direct links)
 app.use("/api/backups", (req, res, next) => {
   if (!req.headers.authorization && req.query.token) {
