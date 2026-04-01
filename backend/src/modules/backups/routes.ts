@@ -540,18 +540,33 @@ router.get("/download/:id", async (req: Request, res: Response) => {
   const server = await prisma.server.findUnique({ where: { id: backup.serverId } });
   if (!server) return res.status(404).json({ error: "Source server not found" });
 
+  // Check file exists first
+  let fileSize: string;
+  try {
+    fileSize = await sshExec(server, `stat -c%s "${backup.fileName}" 2>/dev/null || echo "NOTFOUND"`);
+    if (fileSize === "NOTFOUND") return res.status(404).json({ error: "Backup file not found on server" });
+  } catch {
+    return res.status(500).json({ error: "Cannot reach source server" });
+  }
+
   const ssh = new SSHClient();
+  const timeout = setTimeout(() => { ssh.end(); if (!res.headersSent) res.status(504).json({ error: "Download timeout" }); }, 600000);
+
   ssh.on("ready", () => {
     ssh.exec(`cat "${backup.fileName}"`, (err, stream) => {
-      if (err) { res.status(500).json({ error: err.message }); ssh.end(); return; }
+      if (err) { clearTimeout(timeout); res.status(500).json({ error: err.message }); ssh.end(); return; }
       res.setHeader("Content-Type", "application/octet-stream");
       res.setHeader("Content-Disposition", `attachment; filename="${backup.name}.opsbigbro"`);
-      if (backup.fileSizeMb) res.setHeader("Content-Length", String(Math.round(backup.fileSizeMb * 1024 * 1024)));
+      res.setHeader("Content-Length", fileSize.trim());
       stream.pipe(res);
-      stream.on("close", () => ssh.end());
+      stream.on("close", () => { clearTimeout(timeout); ssh.end(); });
+      stream.on("error", () => { clearTimeout(timeout); ssh.end(); });
     });
   });
-  ssh.on("error", (err) => res.status(500).json({ error: err.message }));
+  ssh.on("error", (err) => {
+    clearTimeout(timeout);
+    if (!res.headersSent) res.status(500).json({ error: err.message });
+  });
   const cfg: any = { host: server.host, port: server.port, username: server.username, readyTimeout: 10000 };
   if (server.authType === "key" && server.privateKey) cfg.privateKey = server.privateKey;
   else cfg.password = server.password;
