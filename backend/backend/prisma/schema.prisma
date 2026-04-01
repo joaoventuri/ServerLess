@@ -1,0 +1,312 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── AUTH & MULTI-TENANCY ───────────────────────────────────
+
+model User {
+  id        String   @id @default(uuid())
+  email     String   @unique
+  name      String
+  password  String // bcrypt hash
+  avatarUrl String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  memberships WorkspaceMember[]
+}
+
+model Workspace {
+  id        String   @id @default(uuid())
+  name      String
+  slug      String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  members      WorkspaceMember[]
+  servers      Server[]
+  vaultGroups  VaultGroup[]
+  healthChecks HealthCheck[]
+  webhooks     Webhook[]
+  domains      Domain[]
+  backups      Backup[]
+  backupSchedules BackupSchedule[]
+  stacks       Stack[]
+}
+
+model WorkspaceMember {
+  id          String   @id @default(uuid())
+  role        String   @default("member") // owner | admin | member
+  joinedAt    DateTime @default(now())
+
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, workspaceId])
+}
+
+// ─── MODULE 1: SERVER VAULT (SSH) ───────────────────────────
+
+model Server {
+  id          String   @id @default(uuid())
+  name        String
+  description String?
+  host        String
+  port        Int      @default(22)
+  username    String
+  authType    String   @default("password") // password | key
+  password    String?  // stored as-is for MVP
+  privateKey  String?  // stored as-is for MVP
+  hasDocker   Boolean  @default(false)
+  isOnline    Boolean  @default(false)
+  lastSeenAt  DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  agentToken  AgentToken?
+  containers  Container[]
+  metrics     Metric[]
+  domains     Domain[]
+
+  @@index([workspaceId])
+}
+
+// ─── MODULE 7: DOMAINS (TRAEFIK) ────────────────────────────
+
+model Domain {
+  id            String   @id @default(uuid())
+  domain        String   // e.g. app.example.com
+  containerName String   // target container name
+  containerPort Int      @default(80) // container internal port
+  ssl           Boolean  @default(true)
+  enabled       Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  serverId      String
+  server        Server    @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  workspaceId   String
+  workspace     Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([domain])
+  @@index([serverId])
+  @@index([workspaceId])
+}
+
+// ─── MODULE 8: BACKUPS ──────────────────────────────────────
+
+model Backup {
+  id            String   @id @default(uuid())
+  name          String
+  type          String   @default("single") // single | stack
+  status        String   @default("pending") // pending | running | completed | failed
+  containerIds  String[] // container names to backup
+  serverId      String   // source server
+  serverName    String   // snapshot of server name
+  fileName      String?  // .opsbigbro file path on server
+  fileSizeMb    Float?
+  error         String?
+  metadata      String?  // JSON: image, ports, env, volumes, networks per container
+  createdAt     DateTime @default(now())
+  completedAt   DateTime?
+
+  workspaceId   String
+  workspace     Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+  @@index([serverId])
+}
+
+model BackupSchedule {
+  id            String   @id @default(uuid())
+  name          String
+  cron          String   // e.g. "0 2 * * *" = daily at 2am
+  containerIds  String[] // container names
+  serverId      String
+  enabled       Boolean  @default(true)
+  keepLast      Int      @default(5) // retention: keep last N backups
+  lastRunAt     DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  workspaceId   String
+  workspace     Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+}
+
+// ─── MODULE 9: STACKS ───────────────────────────────────────
+
+model Stack {
+  id            String   @id @default(uuid())
+  name          String
+  description   String?
+  templateSlug  String?  // if created from marketplace template
+  compose       String   // docker-compose.yml content
+  status        String   @default("stopped") // stopped | running | deploying | error
+  error         String?
+  containerNames String[] // container names managed by this stack
+  serverId      String
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  workspaceId   String
+  workspace     Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+  @@index([serverId])
+}
+
+// ─── MODULE 2: ACCESS HUB (VAULT) ──────────────────────────
+
+model VaultGroup {
+  id          String   @id @default(uuid())
+  name        String
+  icon        String?  @default("folder")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  credentials Credential[]
+
+  @@index([workspaceId])
+}
+
+model Credential {
+  id        String   @id @default(uuid())
+  title     String
+  login     String   // username or email
+  url       String?
+  isOtp     Boolean  @default(false)
+  password  String?  // plain password for MVP
+  otpSecret String?  // TOTP seed secret
+  notes     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  groupId   String
+  group     VaultGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  @@index([groupId])
+}
+
+// ─── MODULE 3: WEBHEALTH & SSL ──────────────────────────────
+
+model HealthCheck {
+  id          String   @id @default(uuid())
+  name        String
+  url         String
+  interval    Int      @default(60) // seconds: 60, 300, 900
+  method      String   @default("GET")
+  expectedStatus Int   @default(200)
+  sslCheck    Boolean  @default(true)
+  sslExpiresAt DateTime?
+  isUp        Boolean  @default(true)
+  lastCheckedAt DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  pings       Ping[]
+
+  @@index([workspaceId])
+}
+
+model Ping {
+  id            String   @id @default(uuid())
+  statusCode    Int?
+  responseTimeMs Int?
+  isUp          Boolean
+  error         String?
+  checkedAt     DateTime @default(now())
+
+  healthCheckId String
+  healthCheck   HealthCheck @relation(fields: [healthCheckId], references: [id], onDelete: Cascade)
+
+  @@index([healthCheckId, checkedAt])
+}
+
+// ─── MODULE 4: TELEMETRY (AGENT METRICS) ────────────────────
+
+model AgentToken {
+  id        String   @id @default(uuid())
+  token     String   @unique @default(uuid())
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  serverId  String   @unique
+  server    Server   @relation(fields: [serverId], references: [id], onDelete: Cascade)
+}
+
+model Metric {
+  id          String   @id @default(uuid())
+  cpuPercent  Float
+  ramUsedMb   Float
+  ramTotalMb  Float
+  diskUsedGb  Float
+  diskTotalGb Float
+  diskReadKb  Float    @default(0)
+  diskWriteKb Float    @default(0)
+  netRxKb     Float    @default(0)
+  netTxKb     Float    @default(0)
+  collectedAt DateTime @default(now())
+
+  serverId    String
+  server      Server   @relation(fields: [serverId], references: [id], onDelete: Cascade)
+
+  // TimescaleDB: after migration, run:
+  // SELECT create_hypertable('Metric', 'collectedAt');
+  @@index([serverId, collectedAt])
+}
+
+// ─── MODULE 5: DOCKER WATCHER ───────────────────────────────
+
+model Container {
+  id            String   @id @default(uuid())
+  containerId   String   // docker short id
+  name          String
+  image         String
+  status        String   // running | exited | paused
+  cpuPercent    Float    @default(0)
+  ramUsageMb    Float    @default(0)
+  ramLimitMb    Float    @default(0)
+  lastUpdatedAt DateTime @default(now())
+  createdAt     DateTime @default(now())
+
+  serverId      String
+  server        Server   @relation(fields: [serverId], references: [id], onDelete: Cascade)
+
+  @@unique([serverId, containerId])
+  @@index([serverId])
+}
+
+// ─── WEBHOOKS ───────────────────────────────────────────────
+
+model Webhook {
+  id        String   @id @default(uuid())
+  name      String
+  url       String   // endpoint to POST to
+  events    String[] // e.g. ["health.down", "health.up", "container.exited", "metric.alert"]
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+}
