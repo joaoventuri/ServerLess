@@ -219,14 +219,14 @@ export function startBackupWorker() {
               cm.volumes.push(vol);
               await sshExec(server,
                 `docker run --rm -v ${mount.Name}:/data -v ${backupDir}/volumes:/backup alpine tar cf /backup/${mount.Name}.tar -C /data .`,
-                300000);
+                0000000);
             } else if (mount.Type === "bind" && mount.Source) {
               const safeName = mount.Source.replace(/\//g, "___");
               const vol = { name: mount.Source, destination: mount.Destination, type: "bind" as const, tarName: safeName };
               cm.volumes.push(vol);
               await sshExec(server,
                 `test -d "${mount.Source}" && tar cf "${backupDir}/volumes/${safeName}.tar" -C "${mount.Source}" . 2>&1 || echo "SKIP"`,
-                300000);
+                300000000);
             }
           }
 
@@ -242,7 +242,7 @@ export function startBackupWorker() {
               const safeName = hostPath.replace(/\//g, "___");
               await sshExec(server,
                 `test -d "${hostPath}" && tar cf "${backupDir}/volumes/${safeName}.tar" -C "${hostPath}" . 2>&1 || echo "SKIP"`,
-                300000);
+                300000000);
             }
           }
 

@@ -7,7 +7,7 @@ const router = Router();
 
 // ─── SSH helpers ────────────────────────────────────────────
 
-function sshExec(server: any, cmd: string, timeout = 30000): Promise<string> {
+function sshExec(server: any, cmd: string, timeout = 300000000): Promise<string> {
   return new Promise((resolve, reject) => {
     const ssh = new SSHClient();
     const timer = setTimeout(() => { ssh.end(); reject(new Error("SSH timeout")); }, timeout);

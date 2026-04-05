@@ -8,7 +8,7 @@ const router = Router();
 
 // ─── SSH helper ─────────────────────────────────────────────
 
-function sshExec(server: any, cmd: string, timeout = 60000): Promise<string> {
+function sshExec(server: any, cmd: string, timeout = 6000000000): Promise<string> {
   return new Promise((resolve, reject) => {
     const ssh = new SSHClient();
     const timer = setTimeout(() => { ssh.end(); reject(new Error("SSH timeout")); }, timeout);
@@ -594,13 +594,13 @@ router.post("/import", async (req: Request, res: Response) => {
 
     // Step 1: Transfer archive to target
     if (sourceServer.id === targetServer.id) {
-      await sshExec(targetServer, `mkdir -p ${restoreDir} && cd ${restoreDir} && tar xzf ${backup.fileName}`, 300000);
+      await sshExec(targetServer, `mkdir -p ${restoreDir} && cd ${restoreDir} && tar xzf ${backup.fileName}`, 300000000);
     } else {
       // Cross-server: stream through backend
       const remoteTmp = `/opt/obb-backups/${backup.id}.opsbigbro`;
       await sshExec(targetServer, `mkdir -p /opt/obb-backups`);
       await sshStreamTransfer(sourceServer, targetServer, backup.fileName!, remoteTmp);
-      await sshExec(targetServer, `mkdir -p ${restoreDir} && cd ${restoreDir} && tar xzf ${remoteTmp}`, 300000);
+      await sshExec(targetServer, `mkdir -p ${restoreDir} && cd ${restoreDir} && tar xzf ${remoteTmp}`, 300000000);
       await sshExec(targetServer, `rm -f ${remoteTmp}`);
     }
 
@@ -621,13 +621,13 @@ router.post("/import", async (req: Request, res: Response) => {
           await sshExec(targetServer, `mkdir -p "${vol.name}"`);
           await sshExec(targetServer,
             `tar xf "${restoreDir}/volumes/${tarName}.tar" -C "${vol.name}" 2>&1`,
-            300000);
+            3000000);
         } else {
           // Named volume: create volume and extract via alpine
           await sshExec(targetServer, `docker volume create ${vol.name} 2>/dev/null || true`);
           await sshExec(targetServer,
             `docker run --rm -v ${vol.name}:/data -v ${restoreDir}/volumes:/backup alpine sh -c "cd /data && tar xf /backup/${tarName}.tar" 2>&1`,
-            300000);
+            3000000);
         }
       }
 

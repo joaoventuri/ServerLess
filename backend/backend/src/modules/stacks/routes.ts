@@ -157,7 +157,7 @@ async function deployStack(stackId: string, server: any, name: string, compose: 
     // Deploy
     const output = await sshExec(server,
       `cd "${stackDir}" && ${composeCmd} pull 2>&1; ${composeCmd} up -d 2>&1`,
-      300000
+      30000000
     );
 
     console.log(`[Stack] Deployed "${name}": ${output.slice(-300)}`);
